@@ -111,8 +111,9 @@ cp .env.example .env.local
   - **OpenAI 兼容语音** / **浏览器原生离线语音**：可按需一键切换。
   - **语速调节**：建议 7 岁零基础先从 **`0.85x`** 开始，熟悉后调回 `0.95x ~ 1.0x`。
 - **STT 听孩子说话**：
-  - 桌面端 Chrome / Edge 默认使用**浏览器原生语音识别**（免费免配置）。
-  - **如主要在 iPad Safari（PWA）上开口跟读**：推荐配置支持 Whisper 格式的云端 STT（`/v1/audio/transcriptions`），可显著提高童声和短单词的识别稳定度。
+  - **MiniMax 语音识别（国内推荐）**：国内直连、识别准确率高且延迟低，默认接口 `https://api.minimax.cn/v1/speech_to_text`、模型 `asr-1.0`（海外账号可改用 `https://api.minimax.io/v1/speech_to_text`）。前端录音会自动重采样并封装为 16kHz 单声道 WAV 上传，全面兼容电脑浏览器与 iPad Safari PWA，填好 Key 后可点 **「测试语音识别 STT」** 一键测通。
+  - **云端 Whisper 接口**：兼容 OpenAI `/v1/audio/transcriptions` 格式，自带当前单元词库识别偏置。
+  - **浏览器原生语音识别**：零配置免费使用，适合桌面端 Chrome / Edge 快速体验。
 
 ### 3. 查看学习成长报告
 切换到 **「学习成长报告」**，可以直观看到：
@@ -130,7 +131,7 @@ cd dinotalk
 
 pnpm typecheck   # TypeScript 类型检查
 pnpm lint        # ESLint 代码检查
-pnpm test        # 运行 Vitest 单元测试（SRS、发音评分、Agent 解析、课程数据校验）
+pnpm test        # 运行 Vitest 单元测试（SRS、发音评分、STT/WAV、游戏出题、Agent 解析、课程校验）
 pnpm build       # 构建生产版本
 ```
 

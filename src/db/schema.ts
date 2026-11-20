@@ -34,7 +34,7 @@ export const appSettings = sqliteTable("app_settings", {
   ttsApiBaseUrl: text("tts_api_base_url").notNull().default(""),
   ttsApiKey: text("tts_api_key").notNull().default(""),
   ttsApiModel: text("tts_api_model").notNull().default("tts-1"),
-  sttEngine: text("stt_engine").notNull().default("browser"), // 'browser' | 'openai'
+  sttEngine: text("stt_engine").notNull().default("browser"), // 'browser' | 'openai' | 'minimax'
   sttApiBaseUrl: text("stt_api_base_url").notNull().default(""),
   sttApiKey: text("stt_api_key").notNull().default(""),
   sttApiModel: text("stt_api_model").notNull().default("whisper-1"),

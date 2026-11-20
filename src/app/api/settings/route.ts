@@ -69,7 +69,7 @@ const UpdateSettingsSchema = z.object({
   ttsApiKey: z.string().max(300).optional(),
   clearTtsApiKey: z.boolean().optional(),
   ttsApiModel: z.string().max(80).optional(),
-  sttEngine: z.enum(["browser", "openai"]).optional(),
+  sttEngine: z.enum(["browser", "openai", "minimax"]).optional(),
   sttApiBaseUrl: z.string().max(300).optional(),
   sttApiKey: z.string().max(300).optional(),
   clearSttApiKey: z.boolean().optional(),

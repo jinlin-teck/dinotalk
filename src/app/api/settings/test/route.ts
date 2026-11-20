@@ -4,7 +4,9 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { appSettings } from "@/db/schema";
 import { callChatCompletion, normalizeBaseUrl } from "@/lib/ai/provider";
+import { MINIMAX_STT_DEFAULT_MODEL, transcribeWithMiniMax } from "@/lib/speech/stt";
 import { synthesizeSpeech } from "@/lib/speech/tts";
+import { createSilentWavBuffer } from "@/lib/speech/wav-encoder";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -120,8 +122,41 @@ export async function POST(request: Request) {
     });
   }
 
-  const base = normalizeBaseUrl(override?.baseUrl ?? settings.sttApiBaseUrl);
   const key = override?.apiKey?.trim() ? override.apiKey.trim() : settings.sttApiKey;
+  if (sttEngine === "minimax") {
+    if (!key.trim()) {
+      return NextResponse.json({
+        ok: false,
+        latencyMs: Date.now() - started,
+        message: "请填写 MiniMax API Key",
+      });
+    }
+
+    try {
+      const wavBuffer = createSilentWavBuffer(400, 16000);
+      const model = (override?.model ?? settings.sttApiModel).trim() || MINIMAX_STT_DEFAULT_MODEL;
+      await transcribeWithMiniMax({
+        audioBlob: new Blob([wavBuffer], { type: "audio/wav" }),
+        filename: "ping.wav",
+        baseUrl: override?.baseUrl ?? settings.sttApiBaseUrl,
+        apiKey: key,
+        model,
+      });
+      return NextResponse.json({
+        ok: true,
+        latencyMs: Date.now() - started,
+        message: `MiniMax 语音识别 (${model}) 连接成功！`,
+      });
+    } catch (err) {
+      return NextResponse.json({
+        ok: false,
+        latencyMs: Date.now() - started,
+        message: err instanceof Error ? err.message : "MiniMax 语音识别连接失败",
+      });
+    }
+  }
+
+  const base = normalizeBaseUrl(override?.baseUrl ?? settings.sttApiBaseUrl);
   if (!base) {
     return NextResponse.json({
       ok: false,

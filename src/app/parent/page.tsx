@@ -16,6 +16,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { EN_VOICE_OPTIONS, LLM_PRESETS, ZH_VOICE_OPTIONS } from "@/lib/ai/presets";
+import { MINIMAX_STT_DEFAULT_MODEL, MINIMAX_STT_DEFAULT_URL } from "@/lib/speech/stt";
 import { useSpeech } from "@/hooks/useSpeech";
 
 interface SanitizedSettings {
@@ -35,7 +36,7 @@ interface SanitizedSettings {
   ttsApiKeyMasked: string;
   hasTtsApiKey: boolean;
   ttsApiModel: string;
-  sttEngine: "browser" | "openai";
+  sttEngine: "browser" | "openai" | "minimax";
   sttApiBaseUrl: string;
   sttApiKeyMasked: string;
   hasSttApiKey: boolean;
@@ -654,7 +655,7 @@ export default function ParentConsolePage() {
                 <Mic className="w-5 h-5 text-emerald-600" />
                 <span>STT 听孩子说话识别方式</span>
               </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {[
                   {
                     id: "browser",
@@ -662,20 +663,55 @@ export default function ParentConsolePage() {
                     desc: "零配置免费用，Chrome / Edge 体验佳",
                   },
                   {
+                    id: "minimax",
+                    title: "MiniMax 语音识别（国内推荐）",
+                    desc: "支持 iPad Safari，国内直连低延迟，默认模型 asr-1.0",
+                  },
+                  {
                     id: "openai",
-                    title: "云端 Whisper 接口（推荐 iPad）",
-                    desc: "支持 iPad Safari PWA，自带当前单元词库识别偏置",
+                    title: "云端 Whisper 接口",
+                    desc: "兼容 OpenAI /audio/transcriptions，自带单元词库偏置",
                   },
                 ].map((opt) => (
                   <button
                     key={opt.id}
                     type="button"
-                    onClick={() =>
-                      setSettings({
-                        ...settings,
-                        sttEngine: opt.id as SanitizedSettings["sttEngine"],
-                      })
-                    }
+                    onClick={() => {
+                      const nextEngine = opt.id as SanitizedSettings["sttEngine"];
+                      if (nextEngine === "minimax") {
+                        const shouldPresetUrl =
+                          !settings.sttApiBaseUrl.trim() ||
+                          settings.sttApiBaseUrl.includes("openai.com");
+                        const shouldPresetModel =
+                          !settings.sttApiModel.trim() ||
+                          settings.sttApiModel.trim() === "whisper-1";
+                        setSettings({
+                          ...settings,
+                          sttEngine: nextEngine,
+                          sttApiBaseUrl: shouldPresetUrl
+                            ? MINIMAX_STT_DEFAULT_URL
+                            : settings.sttApiBaseUrl,
+                          sttApiModel: shouldPresetModel
+                            ? MINIMAX_STT_DEFAULT_MODEL
+                            : settings.sttApiModel,
+                        });
+                      } else if (nextEngine === "openai") {
+                        const isMiniMaxUrl = settings.sttApiBaseUrl.includes("minimax");
+                        const isMiniMaxModel =
+                          settings.sttApiModel.trim() === MINIMAX_STT_DEFAULT_MODEL;
+                        setSettings({
+                          ...settings,
+                          sttEngine: nextEngine,
+                          sttApiBaseUrl: isMiniMaxUrl ? "" : settings.sttApiBaseUrl,
+                          sttApiModel: isMiniMaxModel ? "whisper-1" : settings.sttApiModel,
+                        });
+                      } else {
+                        setSettings({
+                          ...settings,
+                          sttEngine: nextEngine,
+                        });
+                      }
+                    }}
                     className={`p-3.5 rounded-2xl border-2 text-left transition ${
                       settings.sttEngine === opt.id
                         ? "border-emerald-500 bg-emerald-50"
@@ -688,29 +724,58 @@ export default function ParentConsolePage() {
                 ))}
               </div>
 
-              {settings.sttEngine === "openai" && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 rounded-2xl bg-slate-50 border border-slate-200">
-                  <input
-                    type="text"
-                    value={settings.sttApiBaseUrl}
-                    onChange={(e) => setSettings({ ...settings, sttApiBaseUrl: e.target.value })}
-                    placeholder="Whisper Base URL"
-                    className="h-10 rounded-xl border border-slate-300 px-3 text-sm bg-white"
-                  />
-                  <input
-                    type="password"
-                    value={sttKeyDraft}
-                    onChange={(e) => setSttKeyDraft(e.target.value)}
-                    placeholder={settings.hasSttApiKey ? `已保存：${settings.sttApiKeyMasked}` : "STT API Key"}
-                    className="h-10 rounded-xl border border-slate-300 px-3 text-sm bg-white"
-                  />
-                  <input
-                    type="text"
-                    value={settings.sttApiModel}
-                    onChange={(e) => setSettings({ ...settings, sttApiModel: e.target.value })}
-                    placeholder="Model (如 whisper-1)"
-                    className="h-10 rounded-xl border border-slate-300 px-3 text-sm bg-white"
-                  />
+              {(settings.sttEngine === "openai" || settings.sttEngine === "minimax") && (
+                <div className="space-y-2.5 p-4 rounded-2xl bg-slate-50 border border-slate-200">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <input
+                      type="text"
+                      value={settings.sttApiBaseUrl}
+                      onChange={(e) => setSettings({ ...settings, sttApiBaseUrl: e.target.value })}
+                      placeholder={
+                        settings.sttEngine === "minimax"
+                          ? `接口地址 (默认 ${MINIMAX_STT_DEFAULT_URL})`
+                          : "Whisper Base URL (如 https://api.openai.com/v1)"
+                      }
+                      className="h-10 rounded-xl border border-slate-300 px-3 text-sm bg-white"
+                    />
+                    <input
+                      type="password"
+                      value={sttKeyDraft}
+                      onChange={(e) => setSttKeyDraft(e.target.value)}
+                      placeholder={
+                        settings.hasSttApiKey
+                          ? `已保存：${settings.sttApiKeyMasked}`
+                          : settings.sttEngine === "minimax"
+                          ? "MiniMax API Key"
+                          : "STT API Key"
+                      }
+                      className="h-10 rounded-xl border border-slate-300 px-3 text-sm bg-white"
+                    />
+                    <input
+                      type="text"
+                      value={settings.sttApiModel}
+                      onChange={(e) => setSettings({ ...settings, sttApiModel: e.target.value })}
+                      placeholder={
+                        settings.sttEngine === "minimax"
+                          ? `Model (默认 ${MINIMAX_STT_DEFAULT_MODEL})`
+                          : "Model (如 whisper-1)"
+                      }
+                      className="h-10 rounded-xl border border-slate-300 px-3 text-sm bg-white"
+                    />
+                  </div>
+                  {settings.sttEngine === "minimax" && (
+                    <p className="text-xs text-slate-500">
+                      前端录音会自动转为 16kHz 单声道 WAV 上传至 MiniMax{" "}
+                      <code className="px-1 py-0.5 rounded bg-slate-200/70 text-slate-700">
+                        /v1/speech_to_text
+                      </code>
+                      ，兼容电脑浏览器与 iPad Safari。海外账号可将地址改为{" "}
+                      <code className="px-1 py-0.5 rounded bg-slate-200/70 text-slate-700">
+                        https://api.minimax.io/v1/speech_to_text
+                      </code>
+                      。
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -738,6 +803,13 @@ export default function ParentConsolePage() {
                 className="min-h-[46px] px-5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-sm"
               >
                 测试服务端 TTS
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTest("stt")}
+                className="min-h-[46px] px-5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-sm"
+              >
+                测试语音识别 STT
               </button>
             </div>
           </div>

@@ -43,10 +43,12 @@ dinotalk/
 │   │   │   └── tutor-agent.ts        # Prompt 工程、Zod 校验、JSON 容错解析与安全护栏
 │   │   └── speech/
 │   │       ├── tts.ts                # Edge-TTS / OpenAI TTS + SHA-256 磁盘缓存 + 浏览器降级
-│   │       ├── stt.ts                # OpenAI 兼容 Whisper /audio/transcriptions 代理
+│   │       ├── stt.ts                # MiniMax (/v1/speech_to_text, asr-1.0) 与 Whisper 转写客户端
+│   │       ├── wav-encoder.ts        # 纯 TS 16kHz 单声道 PCM16 WAV 重采样与封装（前后端通用）
+│   │       ├── stt.test.ts           # MiniMax / Whisper STT 与 WAV 编码单测
 │   │       └── pronunciation-scorer.ts # 童声发音鼓励评分（归一化 + 同音词容错 + 编辑距离）
 │   ├── hooks/
-│   │   └── useSpeech.ts              # 前端播放队列 + 双通道录音（WebSpeech / MediaRecorder）
+│   │   └── useSpeech.ts              # 前端播放队列 + 双通道录音（WebSpeech / MediaRecorder 转 WAV）
 │   ├── components/
 │   │   ├── AppShell.tsx              # 顶栏状态（星星/连胜/静音/护眼提醒/家长入口）与底栏导航
 │   │   ├── PwaRegister.tsx           # Service Worker 注册组件
@@ -58,6 +60,8 @@ dinotalk/
 │   │       ├── StoryCardsTab.tsx     # Step 1: 绘本点读屋（慢速点读 + 跟读打分）
 │   │       ├── PhonicsTab.tsx        # Step 2: 自然拼读小站（口诀 + 听音辨音小测）
 │   │       ├── MiniGamesTab.tsx      # Step 3: 3 轮梯度闯关游戏（听音选图/翻牌/泡泡）
+│   │       ├── mini-games-logic.ts   # 闯关游戏 3 轮纯函数出题逻辑（含目标词必含与去重校验）
+│   │       ├── mini-games-logic.test.ts # 覆盖全部 L0 单元的游戏选项完整性单测
 │   │       └── RoleplayStageTab.tsx  # Step 4: AI 情景剧场（3 任务追踪 + 提示气泡 + 大麦克风）
 │   └── app/
 │       ├── page.tsx                  # `/` 冒险岛主地图（L0 10 关 + L1/L2 预告）
@@ -73,7 +77,7 @@ dinotalk/
 │           ├── agent/chat/route.ts   # POST AI 情景剧场对话 + 任务状态机 + 对话持久化
 │           ├── agent/freetalk/route.ts # POST 自由英语对话伙伴
 │           ├── speech/tts/route.ts   # POST 服务端 TTS 音频或浏览器降级指令
-│           ├── speech/stt/route.ts   # POST Whisper 语音转写代理（带单元词库偏置）
+│           ├── speech/stt/route.ts   # POST 云端语音转写代理（支持 MiniMax asr-1.0 与 OpenAI Whisper）
 │           ├── settings/route.ts     # GET(脱敏)/PUT 系统与模型配置
 │           ├── settings/test/route.ts# POST 一键测试 LLM / TTS / STT 连通性
 │           └── report/route.ts       # GET 近7天趋势、单元矩阵、词汇墙与对话回顾
@@ -115,6 +119,7 @@ dinotalk/
 - **零挫败与脚手架**：
   - `RoleplayStageTab` 与 `tutor-agent.ts` 每次回复必须保证提供 **2–3 个可直接慢速试听或点击作答的 `nextSuggestions` 提示气泡**。
   - `pronunciation-scorer.ts` 与 `srs.ts` 严禁严厉扣分或进度清零（答错最多降 1 级熟练度，始终给予正向鼓励）。
+  - `mini-games-logic.ts` 负责生成闯关游戏 3 轮题目，必须保证所有题目目标词都必然出现在候选选项/泡泡池中且无重复（由 `mini-games-logic.test.ts` 对全单元校验）。
 - **儿童安全护栏**：`tutor-agent.ts` 的 System Prompt 严禁暴力、恐怖、成人或负面说教内容；LLM 返回的 `completedGoalIds` 和 `masteredWords` 必须经 `parseAgentJson()` 按当前单元合法列表白名单过滤，防止模型幻觉污染进度。
 - **触控友好与无外链依赖**：儿童操作按钮高度 `>= 48px`，矢量插画与音效全部本地内置（SVG + Web Audio API），禁止依赖易失效的外部图片或音频 CDN。
 

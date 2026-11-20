@@ -1,6 +1,47 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { downsampleToMono16k, encodeFloat32ToWavBuffer } from "@/lib/speech/wav-encoder";
+
+function getAudioFilenameForMime(mimeType: string): string {
+  const lower = mimeType.toLowerCase();
+  if (lower.includes("wav")) return "speech.wav";
+  if (lower.includes("mp4") || lower.includes("m4a") || lower.includes("aac")) return "speech.m4a";
+  if (lower.includes("ogg")) return "speech.ogg";
+  if (lower.includes("mpeg") || lower.includes("mp3")) return "speech.mp3";
+  return "speech.webm";
+}
+
+async function convertBlobToWav(blob: Blob): Promise<{ blob: Blob; filename: string }> {
+  const win = window as unknown as {
+    AudioContext?: typeof AudioContext;
+    webkitAudioContext?: typeof AudioContext;
+  };
+  const AudioCtx = win.AudioContext || win.webkitAudioContext;
+  if (!AudioCtx) {
+    return { blob, filename: getAudioFilenameForMime(blob.type) };
+  }
+
+  const ctx = new AudioCtx();
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    const channels: Float32Array[] = [];
+    for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
+      channels.push(audioBuffer.getChannelData(c));
+    }
+    const mono16k = downsampleToMono16k(channels, audioBuffer.sampleRate, 16000);
+    const wavBuffer = encodeFloat32ToWavBuffer(mono16k, 16000);
+    return {
+      blob: new Blob([wavBuffer], { type: "audio/wav" }),
+      filename: "speech.wav",
+    };
+  } catch {
+    return { blob, filename: getAudioFilenameForMime(blob.type) };
+  } finally {
+    ctx.close().catch(() => undefined);
+  }
+}
 
 interface SpeakOptions {
   lang?: "en" | "zh";
@@ -40,14 +81,19 @@ export function useSpeech() {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const sttModeRef = useRef<"browser" | "openai">("browser");
+  const sttModeRef = useRef<"browser" | "openai" | "minimax">("browser");
 
   useEffect(() => {
     fetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (data?.settings?.sttEngine === "openai" && data?.settings?.sttApiBaseUrl) {
+        const s = data?.settings;
+        if (s?.sttEngine === "minimax" && s?.hasSttApiKey) {
+          sttModeRef.current = "minimax";
+        } else if (s?.sttEngine === "openai" && s?.sttApiBaseUrl) {
           sttModeRef.current = "openai";
+        } else {
+          sttModeRef.current = "browser";
         }
       })
       .catch(() => undefined);
@@ -231,12 +277,20 @@ export function useSpeech() {
       stopSpeaking();
       setIsListening(true);
 
-      if (sttModeRef.current === "openai" && typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+      const useCloudStt = sttModeRef.current === "openai" || sttModeRef.current === "minimax";
+      if (useCloudStt && typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           streamRef.current = stream;
           const chunks: BlobPart[] = [];
-          const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+          const preferredMimes = [
+            "audio/webm;codecs=opus",
+            "audio/webm",
+            "audio/mp4",
+            "audio/ogg;codecs=opus",
+          ];
+          const mimeType =
+            preferredMimes.find((m) => MediaRecorder.isTypeSupported(m)) || "";
           const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
           recorderRef.current = recorder;
 
@@ -250,13 +304,15 @@ export function useSpeech() {
             recorderRef.current = null;
             setIsListening(false);
 
-            const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
-            if (blob.size < 100) {
+            const recordedMime = recorder.mimeType || mimeType || "audio/webm";
+            const rawBlob = new Blob(chunks, { type: recordedMime });
+            if (rawBlob.size < 100) {
               setSttError("录音时间太短啦，按住多说一秒试试吧~");
               return;
             }
+            const prepared = await convertBlobToWav(rawBlob);
             const form = new FormData();
-            form.append("audio", blob, "speech.webm");
+            form.append("audio", prepared.blob, prepared.filename);
             form.append("hints", hints);
 
             try {

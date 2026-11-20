@@ -5,6 +5,12 @@ import { CheckCircle2, RotateCcw, Sparkles, Volume2 } from "lucide-react";
 import type { UnitDef, VocabCard } from "@/data/curriculum/types";
 import { WordVisual } from "@/components/illustrations/WordVisual";
 import { soundEffects } from "@/lib/sound-effects";
+import {
+  buildRound1Questions,
+  buildRound2Tiles,
+  buildRound3Questions,
+  type MatchTile,
+} from "./mini-games-logic";
 
 interface MiniGamesTabProps {
   unit: UnitDef;
@@ -13,58 +19,25 @@ interface MiniGamesTabProps {
   speak: (text: string, opts?: { lang?: "en" | "zh"; slow?: boolean }) => Promise<void>;
 }
 
-interface MatchTile {
-  uid: string;
-  pairId: string;
-  kind: "word" | "visual";
-  card: VocabCard;
-}
-
 export function MiniGamesTab({ unit, isDone, onComplete, speak }: MiniGamesTabProps) {
   const [round, setRound] = useState<1 | 2 | 3>(1);
   const [mistakes, setMistakes] = useState(0);
   const [submitting, setSubmitting] = useState(false);
 
   // Round 1: Listen & Pick (3 questions)
-  const round1Questions = useMemo(() => {
-    const base = unit.vocab.slice(0, 3);
-    return base.map((target, idx) => {
-      const others = unit.vocab.filter((v) => v.id !== target.id);
-      const d1 = others[idx % others.length];
-      const d2 = others[(idx + 2) % others.length];
-      const options = [target, d1, d2]
-        .filter(Boolean)
-        .sort((a, b) => a.word.localeCompare(b.word));
-      return { target, options };
-    });
-  }, [unit.vocab]);
+  const round1Questions = useMemo(() => buildRound1Questions(unit.vocab), [unit.vocab]);
 
   const [r1Idx, setR1Idx] = useState(0);
   const [r1Msg, setR1Msg] = useState<string | null>(null);
 
   // Round 2: Memory Match (3 pairs = 6 tiles)
-  const initialTiles = useMemo<MatchTile[]>(() => {
-    const cards = unit.vocab.slice(0, 3);
-    const list: MatchTile[] = [];
-    cards.forEach((c) => {
-      list.push({ uid: `${c.id}-w`, pairId: c.id, kind: "word", card: c });
-      list.push({ uid: `${c.id}-v`, pairId: c.id, kind: "visual", card: c });
-    });
-    // Deterministic kid-friendly shuffle
-    return list.sort((a, b) => a.uid.length * 7 + a.uid.charCodeAt(3) - (b.uid.length * 7 + b.uid.charCodeAt(3)));
-  }, [unit.vocab]);
+  const initialTiles = useMemo<MatchTile[]>(() => buildRound2Tiles(unit.vocab), [unit.vocab]);
 
   const [flippedUids, setFlippedUids] = useState<string[]>([]);
   const [matchedPairs, setMatchedPairs] = useState<string[]>([]);
 
-  // Round 3: Word Bubble Pop (3 targets from latter words if available)
-  const round3Questions = useMemo(() => {
-    const slice = unit.vocab.slice(-3);
-    return slice.map((target) => ({
-      target,
-      bubbles: unit.vocab.slice(0, 6),
-    }));
-  }, [unit.vocab]);
+  // Round 3: Word Bubble Pop (3 targets from latter words, always included in bubbles)
+  const round3Questions = useMemo(() => buildRound3Questions(unit.vocab), [unit.vocab]);
 
   const [r3Idx, setR3Idx] = useState(0);
   const [r3Msg, setR3Msg] = useState<string | null>(null);
