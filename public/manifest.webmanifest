@@ -1,0 +1,25 @@
+{
+  "name": "DinoTalk 小恐龙英语冒险岛",
+  "short_name": "DinoTalk",
+  "description": "面向7岁零基础儿童的AI情景英语启蒙乐园",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#FFFDF5",
+  "theme_color": "#10B981",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# next.js
+/.next/
+/out/
+
+# local data & sqlite
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# env
+.env
+.env*.local
+
+# testing
+/test-results/
+/playwright-report/
+/coverage/
+
+# misc
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts

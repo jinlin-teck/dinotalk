@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+:root {
+  --bg-cream: #fffdf5;
+  --ink: #1e293b;
+}
+
+html,
+body {
+  background-color: var(--bg-cream);
+  color: var(--ink);
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a {
+  touch-action: manipulation;
+}

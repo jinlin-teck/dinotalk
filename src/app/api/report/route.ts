@@ -1,0 +1,112 @@
+import { NextResponse } from "next/server";
+import { asc, desc, eq } from "drizzle-orm";
+import { getDb, todayDateKey } from "@/db";
+import {
+  chatMessages,
+  chatSessions,
+  childProfiles,
+  dailyLogs,
+  unitProgress,
+  wordMastery,
+} from "@/db/schema";
+import { getAllPhonics, getAllVocab, L0_UNITS } from "@/data/curriculum";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const db = getDb();
+  const profile = db.select().from(childProfiles).where(eq(childProfiles.id, 1)).get();
+  const progressRows = db.select().from(unitProgress).where(eq(unitProgress.profileId, 1)).all();
+  const masteryRows = db.select().from(wordMastery).where(eq(wordMastery.profileId, 1)).all();
+  const logRows = db.select().from(dailyLogs).where(eq(dailyLogs.profileId, 1)).all();
+  const sessionRows = db
+    .select()
+    .from(chatSessions)
+    .where(eq(chatSessions.profileId, 1))
+    .orderBy(desc(chatSessions.id))
+    .limit(10)
+    .all();
+
+  // Build last 7 days chart
+  const logMap = new Map(logRows.map((l) => [l.dateKey, l]));
+  const last7Days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = todayDateKey(d);
+    const entry = logMap.get(key);
+    last7Days.push({
+      dateKey: key,
+      label: `${d.getMonth() + 1}/${d.getDate()}`,
+      studyMinutes: Math.round(((entry?.studySeconds ?? 0) / 60) * 10) / 10,
+      activitiesCompleted: entry?.activitiesCompleted ?? 0,
+      wordsPracticed: entry?.wordsPracticed ?? 0,
+    });
+  }
+
+  const vocabMap = new Map(getAllVocab().map((v) => [v.id, v]));
+  const phonicsMap = new Map(getAllPhonics().map((p) => [p.id, p]));
+
+  const wordStats = masteryRows.map((m) => {
+    const v = vocabMap.get(m.itemKey);
+    const p = phonicsMap.get(m.itemKey);
+    return {
+      itemKey: m.itemKey,
+      itemType: m.itemType,
+      unitId: m.unitId,
+      label: v ? v.word : p ? p.letter : m.itemKey,
+      zh: v ? v.zh : p ? p.soundLabel : "",
+      masteryLevel: m.masteryLevel,
+      correctCount: m.correctCount,
+      wrongCount: m.wrongCount,
+    };
+  });
+
+  const progressMap = new Map(progressRows.map((p) => [p.unitId, p]));
+  const unitSummary = L0_UNITS.map((u) => {
+    const p = progressMap.get(u.id);
+    return {
+      unitId: u.id,
+      order: u.order,
+      titleZh: u.titleZh,
+      badgeEmoji: u.badgeEmoji,
+      storyDone: p?.storyDone === 1,
+      phonicsDone: p?.phonicsDone === 1,
+      gameDone: p?.gameDone === 1,
+      roleplayDone: p?.roleplayDone === 1,
+      starsEarned: p?.starsEarned ?? 0,
+    };
+  });
+
+  const recentSessions = sessionRows.map((s) => {
+    const msgs = db
+      .select()
+      .from(chatMessages)
+      .where(eq(chatMessages.sessionId, s.id))
+      .orderBy(asc(chatMessages.id))
+      .all();
+    return {
+      id: s.id,
+      unitId: s.unitId,
+      mode: s.mode,
+      summaryZh: s.summaryZh,
+      starsEarned: s.starsEarned,
+      createdAt: s.createdAt,
+      messages: msgs.map((m) => ({
+        id: m.id,
+        role: m.role,
+        englishText: m.englishText,
+        chineseText: m.chineseText,
+      })),
+    };
+  });
+
+  return NextResponse.json({
+    profile,
+    last7Days,
+    unitSummary,
+    wordStats,
+    recentSessions,
+  });
+}

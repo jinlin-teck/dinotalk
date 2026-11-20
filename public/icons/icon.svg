@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#10B981"/>
+  <circle cx="256" cy="268" r="172" fill="#FFFDF5"/>
+  <!-- Cute Dino Head -->
+  <path d="M168 356c-8-76 28-148 92-160 56-10 112 24 126 78 6 24-6 46-30 52l-36 8c18 14 28 36 24 62H168z" fill="#34D399" stroke="#065F46" stroke-width="10" stroke-linejoin="round"/>
+  <!-- Dino Spikes -->
+  <path d="M210 198l12-28 24 22M256 186l18-28 20 26M300 198l22-22 10 28" fill="#F59E0B" stroke="#065F46" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Belly / Cheek -->
+  <circle cx="294" cy="252" r="18" fill="#065F46"/>
+  <circle cx="300" cy="246" r="6" fill="#FFFFFF"/>
+  <ellipse cx="268" cy="284" rx="16" ry="10" fill="#FDA4AF"/>
+  <path d="M306 294c14 6 30 4 42-6" fill="none" stroke="#065F46" stroke-width="9" stroke-linecap="round"/>
+  <!-- Speech Star -->
+  <path d="M150 144l10 22 24 4-18 16 4 24-20-12-20 12 4-24-18-16 24-4z" fill="#FBBF24" stroke="#B45309" stroke-width="6" stroke-linejoin="round"/>
+</svg>
