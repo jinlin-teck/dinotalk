@@ -9,9 +9,10 @@ import {
   unitProgress,
   wordMastery,
 } from "@/db/schema";
-import { getAllPhonics, getAllVocab, L0_UNITS } from "@/data/curriculum";
+import { getAllPhonics, getAllSentences, getAllVocab, L0_UNITS } from "@/data/curriculum";
 import { requireParentAuth } from "@/lib/auth/parent-session";
 import { DEFAULT_PROFILE_ID } from "@/lib/services/learning-service";
+import { isDueForReview, isMasteryItemWeak } from "@/lib/srs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -77,23 +78,43 @@ export async function GET(request: Request) {
     });
   }
 
+  const now = new Date();
   const vocabMap = new Map(getAllVocab().map((v) => [v.id, v]));
   const phonicsMap = new Map(getAllPhonics().map((p) => [p.id, p]));
+  const sentenceMap = new Map(getAllSentences().map((s) => [s.id, s]));
 
-  const wordStats = masteryRows.map((m) => {
-    const v = vocabMap.get(m.itemKey);
-    const p = phonicsMap.get(m.itemKey);
-    return {
-      itemKey: m.itemKey,
-      itemType: m.itemType,
-      unitId: m.unitId,
-      label: v ? v.word : p ? p.letter : m.itemKey,
-      zh: v ? v.zh : p ? p.soundLabel : "",
-      masteryLevel: m.masteryLevel,
-      correctCount: m.correctCount,
-      wrongCount: m.wrongCount,
-    };
-  });
+  const wordStats = masteryRows
+    .map((m) => {
+      const v = vocabMap.get(m.itemKey);
+      const p = phonicsMap.get(m.itemKey);
+      const s = sentenceMap.get(m.itemKey);
+      const isDue = isDueForReview(m.nextReviewAt, now);
+      const needsAttention = isMasteryItemWeak(
+        {
+          masteryLevel: m.masteryLevel,
+          wrongCount: m.wrongCount,
+          nextReviewAt: m.nextReviewAt,
+        },
+        now
+      );
+      return {
+        itemKey: m.itemKey,
+        itemType: m.itemType,
+        unitId: m.unitId,
+        label: v ? v.word : s ? s.en : p ? (p.lowercase ? `${p.letter}/${p.lowercase}` : p.letter) : m.itemKey,
+        zh: v ? v.zh : s ? s.zh : p ? p.soundLabel : "",
+        masteryLevel: m.masteryLevel,
+        correctCount: m.correctCount,
+        wrongCount: m.wrongCount,
+        isDue,
+        needsAttention,
+      };
+    })
+    .sort((a, b) => {
+      if (a.needsAttention !== b.needsAttention) return a.needsAttention ? -1 : 1;
+      if (a.wrongCount !== b.wrongCount) return b.wrongCount - a.wrongCount;
+      return a.masteryLevel - b.masteryLevel;
+    });
 
   const progressMap = new Map(progressRows.map((p) => [p.unitId, p]));
   const unitSummary = L0_UNITS.map((u) => {
@@ -110,6 +131,29 @@ export async function GET(request: Request) {
       starsEarned: p?.starsEarned ?? 0,
     };
   });
+
+  // 亲子陪读建议：优先取最近更新过进度的 3 个单元，无记录时推荐 U1-U2
+  const recentUnitIds = [...progressRows]
+    .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))
+    .map((p) => p.unitId)
+    .slice(0, 3);
+  const tipUnits =
+    recentUnitIds.length > 0
+      ? recentUnitIds
+          .map((id) => L0_UNITS.find((u) => u.id === id))
+          .filter((u): u is NonNullable<typeof u> => Boolean(u))
+      : L0_UNITS.slice(0, 2);
+
+  const parentTips = tipUnits.map((u) => ({
+    unitId: u.id,
+    unitTitleZh: `第 ${u.order} 关 · ${u.titleZh}`,
+    badgeEmoji: u.badgeEmoji,
+    tipZh:
+      u.parentTipZh ||
+      `和孩子聊聊本关主题「${u.titleZh}」，一起大声说出核心例句吧！`,
+    sampleEn: u.sentences[0]?.en ?? u.vocab[0]?.exampleEn ?? "Hello!",
+    sampleZh: u.sentences[0]?.zh ?? u.vocab[0]?.exampleZh ?? "你好！",
+  }));
 
   const sessionIds = sessionRows.map((s) => s.id);
   const msgsBySession = new Map<number, typeof chatMessages.$inferSelect[]>();
@@ -150,6 +194,7 @@ export async function GET(request: Request) {
     last7Days,
     unitSummary,
     wordStats,
+    parentTips,
     recentSessions,
   });
 }

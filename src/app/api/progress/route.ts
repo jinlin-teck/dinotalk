@@ -2,17 +2,19 @@ import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, todayDateKey } from "@/db";
-import { unitProgress, wordMastery } from "@/db/schema";
+import { childProfiles, unitProgress, wordMastery } from "@/db/schema";
 import { getUnitById } from "@/data/curriculum";
 import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
 import {
   addDailyLogStats,
   awardStarsAndMood,
   DEFAULT_PROFILE_ID,
-  isValidCurriculumItemKey,
   serializeProfile,
+  unitHasCurriculumItem,
+  unlockUnitAccessoryIfCompleted,
   upsertWordMasteryItem,
 } from "@/lib/services/learning-service";
+import type { CurriculumItemType } from "@/types/api";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,7 +46,7 @@ const CompleteStepSchema = z.object({
     .array(
       z.object({
         itemKey: z.string().min(1),
-        itemType: z.enum(["word", "phonics"]),
+        itemType: z.enum(["word", "phonics", "sentence"]),
         correct: z.boolean(),
       })
     )
@@ -68,10 +70,12 @@ export async function POST(request: Request) {
   }
 
   if (practicedItems) {
+    const seen = new Set<string>();
     for (const item of practicedItems) {
-      if (!isValidCurriculumItemKey(item.itemKey, item.itemType)) {
-        return NextResponse.json({ error: "存在无效的词库或拼读项" }, { status: 400 });
+      if (seen.has(item.itemKey) || !unitHasCurriculumItem(unit, item.itemKey, item.itemType)) {
+        return NextResponse.json({ error: "练习词条必须属于当前单元，且不能重复提交" }, { status: 400 });
       }
+      seen.add(item.itemKey);
     }
   }
 
@@ -80,7 +84,7 @@ export async function POST(request: Request) {
   const nowIso = now.toISOString();
   const today = todayDateKey(now);
 
-  const defaultItems: Array<{ itemKey: string; itemType: "word" | "phonics"; correct: boolean }> =
+  const defaultItems: Array<{ itemKey: string; itemType: CurriculumItemType; correct: boolean }> =
     practicedItems && practicedItems.length > 0
       ? practicedItems
       : step === "phonics"
@@ -101,6 +105,11 @@ export async function POST(request: Request) {
       ((step === "story" && existingRow.storyDone === 1) ||
         (step === "phonics" && existingRow.phonicsDone === 1) ||
         (step === "game" && existingRow.gameDone === 1));
+
+    if (wasDone && !practicedItems?.length) {
+      const profile = tx.select().from(childProfiles).where(eq(childProfiles.id, DEFAULT_PROFILE_ID)).get()!;
+      return { unitProgress: existingRow, starsAwarded: 0, unlockedAccessory: null, profile: serializeProfile(profile) };
+    }
 
     const nextStory = step === "story" ? 1 : existingRow?.storyDone ?? 0;
     const nextPhonics = step === "phonics" ? 1 : existingRow?.phonicsDone ?? 0;
@@ -149,13 +158,25 @@ export async function POST(request: Request) {
       )
       .get()!;
 
-    const starsAwarded = wasDone ? 1 : 3;
+    const starsAwarded = wasDone ? 0 : 3;
 
-    const freshProfile = awardStarsAndMood(tx, {
+    awardStarsAndMood(tx, {
       starsDelta: starsAwarded,
-      moodDelta: 5,
+      moodDelta: wasDone ? 0 : 5,
       nowIso,
-    })!;
+    });
+
+    const unlockedAccessory = unlockUnitAccessoryIfCompleted(tx, {
+      unitId,
+      starsEarned: nextStarsCount,
+      nowIso,
+    });
+
+    const freshProfile = tx
+      .select()
+      .from(childProfiles)
+      .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+      .get()!;
 
     for (const item of defaultItems) {
       upsertWordMasteryItem(tx, {
@@ -176,9 +197,10 @@ export async function POST(request: Request) {
     return {
       unitProgress: updatedProgress,
       starsAwarded,
+      unlockedAccessory,
       profile: serializeProfile(freshProfile),
     };
-  });
+  }, { behavior: "immediate" });
 
   return NextResponse.json(txResult);
 }

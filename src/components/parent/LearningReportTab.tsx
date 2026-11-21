@@ -6,9 +6,50 @@ interface LearningReportTabProps {
   report: ReportData;
 }
 
+function itemTypeBadge(itemType: string): string {
+  if (itemType === "phonics") return "拼读";
+  if (itemType === "sentence") return "句型";
+  return "单词";
+}
+
 export function LearningReportTab({ report }: LearningReportTabProps) {
+  const attentionItems = report.wordStats.filter((w) => w.needsAttention);
+  const steadyItems = report.wordStats.filter((w) => !w.needsAttention);
+
   return (
     <div className="space-y-6">
+      {/* Parent 1-Minute Companion Tips */}
+      {report.parentTips && report.parentTips.length > 0 && (
+        <div className="bg-gradient-to-br from-amber-50 to-emerald-50 rounded-3xl border-2 border-amber-200 p-5 sm:p-6 space-y-3">
+          <div>
+            <h2 className="text-lg font-black text-slate-900">
+              🏡 今晚 1 分钟亲子英语陪读卡
+            </h2>
+            <p className="text-xs text-slate-600 mt-0.5">
+              根据孩子最近学习进度自动生成，吃饭或睡前随口练 1 句，把屏幕里的英语带进真实生活！
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {report.parentTips.map((tip) => (
+              <div
+                key={tip.unitId}
+                className="rounded-2xl bg-white border border-amber-200 p-4 space-y-2 shadow-2xs"
+              >
+                <div className="font-black text-sm text-slate-900 flex items-center gap-1.5">
+                  <span>{tip.badgeEmoji}</span>
+                  <span>{tip.unitTitleZh}</span>
+                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">{tip.tipZh}</p>
+                <div className="rounded-xl bg-emerald-50 px-3 py-2 text-xs">
+                  <div className="font-black text-emerald-900">{tip.sampleEn}</div>
+                  <div className="text-emerald-700 mt-0.5">{tip.sampleZh}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 7-day bar chart */}
       <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-6 space-y-4">
         <h2 className="text-lg font-black text-slate-900">近 7 天学习活跃趋势</h2>
@@ -71,23 +112,64 @@ export function LearningReportTab({ report }: LearningReportTabProps) {
         </div>
       </div>
 
-      {/* Word Mastery Wall */}
-      <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-6 space-y-3">
+      {/* Word / Phonics / Sentence Mastery Wall (Weak items highlighted first) */}
+      <div className="bg-white rounded-3xl border border-slate-200 p-5 sm:p-6 space-y-4">
         <h2 className="text-lg font-black text-slate-900">
-          已接触词汇与拼读掌握墙（共 {report.wordStats.length} 项）
+          词汇、拼读与句型掌握墙（共 {report.wordStats.length} 项）
         </h2>
         {report.wordStats.length === 0 ? (
           <p className="text-sm text-slate-500">孩子还没有开始学习记录，先去体验第一关吧~</p>
         ) : (
-          <div className="flex flex-wrap gap-2">
-            {report.wordStats.map((w) => (
-              <div
-                key={w.itemKey}
-                className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900"
-              >
-                {w.label} <span className="text-slate-500">({w.zh})</span> · Lv.{w.masteryLevel}
+          <div className="space-y-4">
+            {attentionItems.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-extrabold text-amber-800">
+                  ⚠️ 重点巩固（待复习或掌握度偏低，共 {attentionItems.length} 项）
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {attentionItems.map((w) => (
+                    <div
+                      key={w.itemKey}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold ${
+                        w.wrongCount > 0
+                          ? "bg-rose-50 border-rose-200 text-rose-900"
+                          : "bg-amber-50 border-amber-200 text-amber-900"
+                      }`}
+                    >
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/80 mr-1">
+                        {itemTypeBadge(w.itemType)}
+                      </span>
+                      {w.label} <span className="opacity-75">({w.zh})</span> · Lv.{w.masteryLevel}
+                      {w.wrongCount > 0 && (
+                        <span className="ml-1 text-rose-700">· 错{w.wrongCount}次</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
+            )}
+
+            {steadyItems.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-extrabold text-emerald-800">
+                  ✅ 稳步掌握（共 {steadyItems.length} 项）
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {steadyItems.map((w) => (
+                    <div
+                      key={w.itemKey}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-900"
+                    >
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/80 mr-1">
+                        {itemTypeBadge(w.itemType)}
+                      </span>
+                      {w.label} <span className="text-slate-500">({w.zh})</span> · Lv.
+                      {w.masteryLevel}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

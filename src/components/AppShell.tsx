@@ -47,6 +47,20 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
   }, []);
 
   useEffect(() => {
+    const recordVisit = () => {
+      if (document.visibilityState !== "visible") return;
+      fetch("/api/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "record_activity" }),
+      }).catch(() => undefined);
+    };
+    recordVisit();
+    document.addEventListener("visibilitychange", recordVisit);
+    return () => document.removeEventListener("visibilitychange", recordVisit);
+  }, [pathname]);
+
+  useEffect(() => {
     const SECS_KEY = "dinotalk_visible_study_secs";
     const ALERT_KEY = "dinotalk_eye_care_last_min";
 
@@ -148,15 +162,16 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
               <span>{profile?.streakDays ?? 1}天</span>
             </div>
 
-            {/* Eye care indicator */}
+            {/* Eye care indicator (visible on mobile & desktop) */}
             <button
               type="button"
               onClick={() => setShowEyeCare(true)}
-              className="hidden md:flex items-center gap-1 bg-sky-50 border-2 border-sky-200 rounded-full px-2.5 py-1 text-sky-700 font-semibold text-xs hover:bg-sky-100"
+              className="flex items-center gap-1 bg-sky-50 border-2 border-sky-200 rounded-full px-2 sm:px-2.5 py-1 text-sky-700 font-semibold text-xs hover:bg-sky-100"
               title="护眼小提醒"
             >
-              <Clock className="w-3.5 h-3.5" />
-              <span>{sessionMinutes}m / {eyeLimit}m</span>
+              <Clock className="w-3.5 h-3.5 shrink-0" />
+              <span className="sm:hidden">{sessionMinutes}m</span>
+              <span className="hidden sm:inline">{sessionMinutes}m / {eyeLimit}m</span>
             </button>
 
             {/* Mute toggle */}

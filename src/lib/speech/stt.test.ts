@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveActiveSttMode } from "./constants";
 import {
   MINIMAX_STT_DEFAULT_MODEL,
   MINIMAX_STT_DEFAULT_URL,
@@ -11,6 +12,13 @@ import {
   downsampleToMono16k,
   encodeFloat32ToWavBuffer,
 } from "./wav-encoder";
+
+it("requires a key for the official OpenAI STT endpoint and allows keyless compatible endpoints", () => {
+  const official = { sttEngine: "openai", sttApiBaseUrl: "https://api.openai.com/v1", hasSttApiKey: false };
+  expect(resolveActiveSttMode(official)).toBe("browser");
+  expect(resolveActiveSttMode({ ...official, hasSttApiKey: true })).toBe("openai");
+  expect(resolveActiveSttMode({ ...official, sttApiBaseUrl: "http://localhost:8000/v1" })).toBe("openai");
+});
 
 describe("resolveMiniMaxSttUrl", () => {
   it("normalizes empty, host, /v1, and full endpoint URLs", () => {

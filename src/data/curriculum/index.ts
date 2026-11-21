@@ -1,6 +1,6 @@
 import { L0_UNITS_1_TO_5 } from "./l0-units-1-5";
 import { L0_UNITS_6_TO_10 } from "./l0-units-6-10";
-import type { LevelDef, PhonicsItem, UnitDef, VocabCard } from "./types";
+import type { LevelDef, PhonicsItem, SentencePattern, UnitDef, VocabCard } from "./types";
 
 export * from "./types";
 
@@ -58,6 +58,12 @@ export interface IndexedPhonicsItem extends PhonicsItem {
   unitTitleZh: string;
 }
 
+export interface IndexedSentencePattern extends SentencePattern {
+  unitId: string;
+  unitTitleZh: string;
+  visualKey: string;
+}
+
 export function getAllVocab(): IndexedVocabCard[] {
   return L0_UNITS.flatMap((unit) =>
     unit.vocab.map((card) => ({
@@ -74,6 +80,17 @@ export function getAllPhonics(): IndexedPhonicsItem[] {
       ...item,
       unitId: unit.id,
       unitTitleZh: unit.titleZh,
+    }))
+  );
+}
+
+export function getAllSentences(): IndexedSentencePattern[] {
+  return L0_UNITS.flatMap((unit) =>
+    unit.sentences.map((s, idx) => ({
+      ...s,
+      unitId: unit.id,
+      unitTitleZh: unit.titleZh,
+      visualKey: unit.vocab[idx % unit.vocab.length]?.visualKey ?? "star",
     }))
   );
 }
@@ -139,6 +156,8 @@ export interface PetAccessory {
   emoji: string;
   costStars: number;
   descZh: string;
+  slot?: "hat" | "face" | "neck" | "hand";
+  unlockUnitId?: string;
 }
 
 export const PET_ACCESSORIES: PetAccessory[] = [
@@ -149,6 +168,7 @@ export const PET_ACCESSORIES: PetAccessory[] = [
     emoji: "👑",
     costStars: 8,
     descZh: "闪闪发光的小皇冠，英语小王子/小公主专属！",
+    slot: "hat",
   },
   {
     id: "wizard_hat",
@@ -157,6 +177,7 @@ export const PET_ACCESSORIES: PetAccessory[] = [
     emoji: "🎩",
     costStars: 10,
     descZh: "戴上它仿佛拥有瞬间记住单词的小魔法！",
+    slot: "hat",
   },
   {
     id: "scarf",
@@ -165,6 +186,7 @@ export const PET_ACCESSORIES: PetAccessory[] = [
     emoji: "🧣",
     costStars: 6,
     descZh: "冬天出门冒险也要暖呼呼的！",
+    slot: "neck",
   },
   {
     id: "sunglasses",
@@ -173,8 +195,206 @@ export const PET_ACCESSORIES: PetAccessory[] = [
     emoji: "🕶️",
     costStars: 7,
     descZh: "戴上小墨镜，变成全岛最酷的小恐龙！",
+    slot: "face",
+  },
+  {
+    id: "star_cape",
+    nameZh: "星光小披风",
+    nameEn: "Star Cape",
+    emoji: "🦸",
+    costStars: 14,
+    descZh: "超级小英雄披风，飞跃整座英语冒险岛！",
+    slot: "neck",
+  },
+  {
+    id: "magic_wand",
+    nameZh: "星星魔法棒",
+    nameEn: "Star Wand",
+    emoji: "🪄",
+    costStars: 12,
+    descZh: "轻轻一挥，生词全都变成闪亮小星星！",
+    slot: "hand",
+  },
+  // 10 关满 4 星专属解锁装扮（也可满星自动免费获赠）
+  {
+    id: "sailor_cap",
+    nameZh: "阳光航海帽",
+    nameEn: "Sailor Cap",
+    emoji: "⚓",
+    costStars: 0,
+    descZh: "第 1 关满 4 星专属奖励！扬帆启航交朋友！",
+    slot: "hat",
+    unlockUnitId: "u1-greetings",
+  },
+  {
+    id: "rainbow_brush",
+    nameZh: "彩虹魔法画笔",
+    nameEn: "Rainbow Brush",
+    emoji: "🖌️",
+    costStars: 0,
+    descZh: "第 2 关满 4 星专属奖励！画出七彩好心情！",
+    slot: "hand",
+    unlockUnitId: "u2-colors",
+  },
+  {
+    id: "party_hat",
+    nameZh: "生日派对帽",
+    nameEn: "Party Hat",
+    emoji: "🥳",
+    costStars: 0,
+    descZh: "第 3 关满 4 星专属奖励！每天都像过生日一样开心！",
+    slot: "hat",
+    unlockUnitId: "u3-numbers",
+  },
+  {
+    id: "heart_badge",
+    nameZh: "暖心红心领章",
+    nameEn: "Heart Badge",
+    emoji: "💖",
+    costStars: 0,
+    descZh: "第 4 关满 4 星专属奖励！把家人的爱带在胸口！",
+    slot: "neck",
+    unlockUnitId: "u4-family",
+  },
+  {
+    id: "fruit_apron",
+    nameZh: "阳光水果围裙",
+    nameEn: "Fruit Apron",
+    emoji: "🍓",
+    costStars: 0,
+    descZh: "第 5 关满 4 星专属奖励！礼貌购物小店长！",
+    slot: "neck",
+    unlockUnitId: "u5-fruits",
+  },
+  {
+    id: "zoo_binoculars",
+    nameZh: "森林探险望远镜",
+    nameEn: "Zoo Binoculars",
+    emoji: "🔭",
+    costStars: 0,
+    descZh: "第 6 关满 4 星专属奖励！发现躲藏的小动物！",
+    slot: "hand",
+    unlockUnitId: "u6-animals",
+  },
+  {
+    id: "sport_band",
+    nameZh: "活力运动发带",
+    nameEn: "Sport Band",
+    emoji: "🏃",
+    costStars: 0,
+    descZh: "第 7 关满 4 星专属奖励！一起蹦蹦跳跳充满活力！",
+    slot: "hat",
+    unlockUnitId: "u7-body",
+  },
+  {
+    id: "school_bowtie",
+    nameZh: "小学霸红领结",
+    nameEn: "Scholar Bowtie",
+    emoji: "🎀",
+    costStars: 0,
+    descZh: "第 8 关满 4 星专属奖励！整理书包小能手！",
+    slot: "neck",
+    unlockUnitId: "u8-school",
+  },
+  {
+    id: "rainbow_umbrella",
+    nameZh: "彩虹小雨伞",
+    nameEn: "Rainbow Umbrella",
+    emoji: "☂️",
+    costStars: 0,
+    descZh: "第 9 关满 4 星专属奖励！晴天雨天都能快乐播报！",
+    slot: "hand",
+    unlockUnitId: "u9-weather",
+  },
+  {
+    id: "mecha_visor",
+    nameZh: "机甲炫光护目镜",
+    nameEn: "Mecha Visor",
+    emoji: "🤖",
+    costStars: 0,
+    descZh: "第 10 关满 4 星专属奖励！L0 启蒙岛毕业大英雄！",
+    slot: "face",
+    unlockUnitId: "u10-toys",
   },
 ];
+
+export interface DinoSkin {
+  id: string;
+  nameZh: string;
+  nameEn: string;
+  descZh: string;
+  costStars: number;
+  minLevel: number;
+  bodyColor: string;
+  feetColor: string;
+  strokeColor: string;
+  bellyColor: string;
+  spikeColor: string;
+  shadowColor: string;
+}
+
+export const DINO_SKINS: DinoSkin[] = [
+  {
+    id: "dino-green",
+    nameZh: "薄荷冒险绿",
+    nameEn: "Mint Dino",
+    descZh: "经典元气小绿恐龙，陪你踏上冒险岛！",
+    costStars: 0,
+    minLevel: 1,
+    bodyColor: "#34D399",
+    feetColor: "#10B981",
+    strokeColor: "#065F46",
+    bellyColor: "#FEF3C7",
+    spikeColor: "#F59E0B",
+    shadowColor: "#D1FAE5",
+  },
+  {
+    id: "dino-sky",
+    nameZh: "星空海洋蓝",
+    nameEn: "Sky Dino",
+    descZh: "像晴朗蓝天一样清凉帅气的蓝色小恐龙！",
+    costStars: 10,
+    minLevel: 1,
+    bodyColor: "#38BDF8",
+    feetColor: "#0284C7",
+    strokeColor: "#0C4A6E",
+    bellyColor: "#E0F2FE",
+    spikeColor: "#FACC15",
+    shadowColor: "#BAE6FD",
+  },
+  {
+    id: "dino-berry",
+    nameZh: "草莓奶昔粉",
+    nameEn: "Berry Dino",
+    descZh: "甜甜软软的草莓粉恐龙，笑起来超治愈！",
+    costStars: 12,
+    minLevel: 2,
+    bodyColor: "#F472B6",
+    feetColor: "#DB2777",
+    strokeColor: "#831843",
+    bellyColor: "#FCE7F3",
+    spikeColor: "#FDE047",
+    shadowColor: "#FBCFE8",
+  },
+  {
+    id: "dino-gold",
+    nameZh: "阳光闪耀金",
+    nameEn: "Golden Dino",
+    descZh: "自带小太阳光环的传说级金色恐龙！",
+    costStars: 16,
+    minLevel: 3,
+    bodyColor: "#FBBF24",
+    feetColor: "#D97706",
+    strokeColor: "#78350F",
+    bellyColor: "#FEF9C3",
+    spikeColor: "#FB7185",
+    shadowColor: "#FDE68A",
+  },
+];
+
+export function getUnitRewardAccessory(unitId: string): PetAccessory | undefined {
+  return PET_ACCESSORIES.find((a) => a.unlockUnitId === unitId);
+}
 
 export interface FreeTalkTopic {
   id: string;

@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 interface RateLimitState {
   sources: Map<string, number[]>;
   global: number[];
@@ -35,11 +37,9 @@ function pruneSources(state: RateLimitState): void {
 }
 
 export function getRequestSourceKey(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  if (forwarded) return forwarded;
-  const realIp = request.headers.get("x-real-ip")?.trim();
-  if (realIp) return realIp;
-  return "local";
+  // Only enable this behind a proxy that overwrites X-Real-IP on every request.
+  const realIp = process.env.TRUST_PROXY_HEADERS === "1" && request.headers.get("x-real-ip")?.trim();
+  return realIp && isIP(realIp) ? realIp : "local";
 }
 
 export function isRateLimited(

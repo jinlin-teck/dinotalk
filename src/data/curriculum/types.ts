@@ -16,9 +16,13 @@ export interface VocabCard {
 export interface PhonicsItem {
   id: string;
   letter: string; // e.g. "S" or "CAT" for CVC
+  lowercase?: string; // e.g. "s" for single-letter uppercase/lowercase pairing
   soundLabel: string; // e.g. "/s/" or "/k/-/æ/-/t/"
   mnemonicZh: string;
   mouthTipZh: string;
+  confusableTipZh?: string; // e.g. b/d, p/q memory trick
+  quizHintMask?: string; // e.g. "_at" / "_ite" to disambiguate C(/k/) vs K(/k/)
+  blendParts?: string[]; // e.g. ["c", "a", "t"] for CVC blending interaction
   sampleWords: Array<{
     word: string;
     zh: string;
@@ -86,6 +90,7 @@ export interface UnitDef {
   themeColor: string;
   badgeEmoji: string;
   phonicsLabel: string;
+  parentTipZh?: string;
   vocab: VocabCard[];
   sentences: SentencePattern[];
   phonics: PhonicsItem[];

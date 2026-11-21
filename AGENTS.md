@@ -24,17 +24,17 @@ dinotalk/
 │   └── icons/                        # SVG 应用图标
 ├── src/
 │   ├── db/
-│   │   ├── schema.ts                 # 7 张 SQLite 表结构 (Drizzle sqliteTable)
+│   │   ├── schema.ts                 # 8 张 SQLite 表结构 (Drizzle sqliteTable，含 voice_proofs 语音凭证)
 │   │   ├── node-sqlite-adapter.ts    # node:sqlite -> better-sqlite3 同步兼容适配器
-│   │   └── index.ts                  # 全局单例连接、WAL 模式、自动建表与默认种子数据
+│   │   └── index.ts                  # 全局单例连接、WAL/busy_timeout、自动建表、增量列迁移与默认种子数据
 │   ├── data/curriculum/
-│   │   ├── types.ts                  # UnitDef / VocabCard / PhonicsItem / RoleplayScenario 类型
-│   │   ├── l0-units-1-5.ts           # L0 第 1~5 单元（含自然拼读 S,A,T,P,I,N,C,K,E,H,R,M,D,G,O）
-│   │   ├── l0-units-6-10.ts          # L0 第 6~10 单元（U,L,F,B,J,Z,W,V,Y,X,Q + U10 CVC 拼读）
-│   │   ├── index.ts                  # L0-L2 路线图、宠物零食/装扮目录、自由聊天话题
-│   │   └── curriculum.test.ts        # 课程完整性与 26 字母覆盖校验单测
+│   │   ├── types.ts                  # UnitDef / VocabCard / PhonicsItem / SentencePattern / RoleplayScenario 类型
+│   │   ├── l0-units-1-5.ts           # L0 第 1~5 单元（自然拼读 S,A,T,P,I,N,C,K,E,H,R,M,D,G,O + CVC 合体练习）
+│   │   ├── l0-units-6-10.ts          # L0 第 6~10 单元（U,L,F,B,J,Z,W,V,Y,X,Q + 每单元 CVC 拼读）
+│   │   ├── index.ts                  # L0-L2 路线图、句型索引、宠物零食/装扮/恐龙肤色目录、关卡满星奖励、自由聊天话题
+│   │   └── curriculum.test.ts        # 课程完整性、26 字母覆盖与 visualKey/sceneKey 插画映射校验单测
 │   ├── lib/
-│   │   ├── srs.ts                    # 儿童友好间隔重复算法 [0,1,2,4,7,14] 天
+│   │   ├── srs.ts                    # 儿童友好间隔重复算法 [0,1,2,4,7,14] 天 + 弱项/待复习判定
 │   │   ├── sound-effects.ts          # Web Audio API 本地合成童趣交互音效（客户端）
 │   │   ├── auth/
 │   │   │   └── parent-session.ts     # 家长 PIN(scrypt)、HMAC 会话 Cookie、算术题与服务端限流
@@ -43,7 +43,7 @@ dinotalk/
 │   │   │   ├── provider-fetch.ts     # 带 DNS 校验与禁止重定向的出站 fetch
 │   │   │   └── rate-limit.ts         # 内存滑动窗口限流（按来源 + 全局上限）
 │   │   ├── services/
-│   │   │   └── learning-service.ts   # 档案序列化、SRS 写入、每日统计与星星结算
+│   │   │   └── learning-service.ts   # 档案序列化、SRS 写入、每日统计、星星结算、关卡奖励装扮与同槽位互斥
 │   │   ├── ai/
 │   │   │   ├── presets.ts            # DeepSeek / 通义 / OpenAI / Gemini / 豆包 / Ollama 预设
 │   │   │   ├── provider.ts           # 通用 OpenAI 兼容 /chat/completions 客户端与密钥脱敏
@@ -51,17 +51,19 @@ dinotalk/
 │   │   │   └── tutor-agent.ts        # Prompt 工程、Zod 校验、JSON 容错解析与安全护栏
 │   │   └── speech/
 │   │       ├── tts.ts                # Edge-TTS / OpenAI TTS + SHA-256 磁盘缓存 + 浏览器降级
-│   │       ├── stt.ts                # MiniMax (/v1/speech_to_text, asr-1.0) 与 Whisper 转写客户端
+│   │       ├── stt.ts                # MiniMax (/v1/speech_to_text, asr-1.0) 与 Whisper 转写客户端（中/英语言选择）
 │   │       ├── wav-encoder.ts        # 纯 TS 16kHz 单声道 PCM16 WAV 重采样与封装（前后端通用）
+│   │       ├── voice-proof.ts        # 语音凭证签发/消费（防刷星：投喂半价与剧场语音加星）
+│   │       ├── text-sanitizer.ts     # 面向 TTS/对话气泡的 Markdown、音标与标记符号清洗
 │   │       ├── stt.test.ts           # MiniMax / Whisper STT 与 WAV 编码单测
-│   │       └── pronunciation-scorer.ts # 童声发音鼓励评分（归一化 + 同音词容错 + 编辑距离）
+│   │       └── pronunciation-scorer.ts # 童声发音鼓励评分（归一化 + 数字/同音词容错 + 编辑距离）
 │   ├── hooks/
-│   │   └── useSpeech.ts              # 前端播放队列 + 双通道录音（WebSpeech / MediaRecorder 转 WAV）
+│   │   └── useSpeech.ts              # 前端播放队列 + 双通道录音（含中英识别语言、过期录音丢弃与语音凭证）
 │   ├── components/
 │   │   ├── AppShell.tsx              # 顶栏状态（星星/连胜/静音/护眼提醒/家长入口）与底栏导航
 │   │   ├── PwaRegister.tsx           # Service Worker 注册组件
 │   │   ├── illustrations/
-│   │   │   ├── DinoCharacter.tsx     # 7 种情绪 + 4 种配饰的 SVG 动态小恐龙
+│   │   │   ├── DinoCharacter.tsx     # 7 种情绪 + 4 套肤色 + 16 件分槽位配饰的 SVG 动态小恐龙
 │   │   │   ├── SceneArtwork.tsx      # 10 个单元剧场专属 SVG 场景背景
 │   │   │   ├── WordVisual.tsx        # 零外链依赖的单词/颜色/数字视觉卡片
 │   │   │   └── visual-keys.ts        # 视觉键 -> SVG/emoji/配色映射与课程校验用查询函数
@@ -72,32 +74,32 @@ dinotalk/
 │   │   │   ├── ProfileSettingsTab.tsx# 档案、护眼与家长密码页签
 │   │   │   └── LearningReportTab.tsx # 学习成长报告页签
 │   │   └── unit/
-│   │       ├── StoryCardsTab.tsx     # Step 1: 绘本点读屋（慢速点读 + 跟读打分）
-│   │       ├── PhonicsTab.tsx        # Step 2: 自然拼读小站（口诀 + 听音辨音小测）
-│   │       ├── MiniGamesTab.tsx      # Step 3: 3 轮梯度闯关游戏（听音选图/翻牌/泡泡）
-│   │       ├── mini-games-logic.ts   # 闯关游戏 3 轮纯函数出题逻辑（含目标词必含与去重校验）
+│   │       ├── StoryCardsTab.tsx     # Step 1: 绘本点读屋（慢速点读 + 跟读打分 + 核心句型入库）
+│   │       ├── PhonicsTab.tsx        # Step 2: 自然拼读小站（大小写/易混字母 + CVC 拼读小火车 + 听音辨音）
+│   │       ├── MiniGamesTab.tsx      # Step 3: 4 轮梯度闯关（听音选图/翻牌/泡泡/拼读积木）
+│   │       ├── mini-games-logic.ts   # 闯关 4 轮纯函数出题逻辑（含目标词必含、去重与 CVC 拼词校验）
 │   │       ├── mini-games-logic.test.ts # 覆盖全部 L0 单元的游戏选项完整性单测
 │   │       └── RoleplayStageTab.tsx  # Step 4: AI 情景剧场（3 任务追踪 + 提示气泡 + 大麦克风）
 │   └── app/
-│       ├── page.tsx                  # `/` 冒险岛主地图（L0 10 关 + L1/L2 预告）
+│       ├── page.tsx                  # `/` 冒险岛主地图（L0 10 关 + 每日能量条 + L1/L2 预告）
 │       ├── unit/[unitId]/page.tsx    # `/unit/[unitId]` 单元四步学习容器
-│       ├── review/page.tsx           # `/review` 每日 3 分钟 SRS 复习宝箱
-│       ├── pet/page.tsx              # `/pet` 小恐龙喂养与换装小屋
+│       ├── review/page.tsx           # `/review` 每日 3 分钟 SRS 复习宝箱（听音选图/盲听/开口说卡片）
+│       ├── pet/page.tsx              # `/pet` 小恐龙喂养（语音半价）、肤色变身与装扮小屋
 │       ├── chat/page.tsx             # `/chat` 和 Dino 自由聊聊
 │       ├── parent/page.tsx           # `/parent` 家长控制台（数学锁/配置/测试/成长报告）
 │       └── api/                      # 12 个 Node.js Runtime REST 路由
 │           ├── parent/auth/route.ts  # GET/POST 家长验证（算术题 / PIN / 登出 / 设置密码）
-│           ├── profile/route.ts      # GET/PATCH 档案、喂食、买/戴装扮、学习心跳计时
-│           ├── progress/route.ts     # GET/POST 单元 4 环节进度结算与 SRS 写入
-│           ├── review/route.ts       # GET/POST SRS 到期队列抽取与复习结算
-│           ├── agent/chat/route.ts   # POST AI 情景剧场对话 + 任务状态机 + 对话持久化
-│           ├── agent/freetalk/route.ts # POST 自由英语对话伙伴
+│           ├── profile/route.ts      # GET/PATCH 档案、语音半价喂食、买/戴装扮、肤色选择、学习心跳
+│           ├── progress/route.ts     # GET/POST 单元 4 环节进度结算、SRS 写入与满星装扮解锁
+│           ├── review/route.ts       # GET/POST SRS 到期队列抽取（单词/拼读/句型）与复习结算
+│           ├── agent/chat/route.ts   # POST AI 情景剧场对话 + 任务状态机 + 语音凭证加成 + 对话持久化
+│           ├── agent/freetalk/route.ts # POST 自由英语对话伙伴（支持话题开场白）
 │           ├── speech/tts/route.ts   # POST 服务端 TTS 音频或浏览器降级指令
-│           ├── speech/stt/route.ts   # POST 云端语音转写代理（支持 MiniMax asr-1.0 与 OpenAI Whisper）
-│           ├── speech/config/route.ts# GET 公开的 STT 模式（仅返回 sttMode，不含任何密钥）
+│           ├── speech/stt/route.ts   # POST 云端语音转写代理（MiniMax asr-1.0 / OpenAI Whisper，签发语音凭证）
+│           ├── speech/config/route.ts# GET 公开的 STT 模式与中文提示自动朗读开关（不含任何密钥）
 │           ├── settings/route.ts     # GET(脱敏)/PUT 系统与模型配置（需家长会话）
 │           ├── settings/test/route.ts# POST 一键测试 LLM / TTS / STT 连通性（需家长会话）
-│           └── report/route.ts       # GET 近7天趋势、单元矩阵、词汇墙与对话回顾（需家长会话）
+│           └── report/route.ts       # GET 近7天趋势、单元矩阵、掌握墙、亲子陪读卡与对话回顾（需家长会话）
 ├── Dockerfile                        # Node 24 多阶段 standalone 镜像（设 DOCKER_BUILD=1）
 ├── docker-compose.yml                # 挂载 ./data 持久化数据卷
 ├── next.config.ts                    # serverExternalPackages + node:sqlite external 配置
@@ -134,8 +136,13 @@ dinotalk/
    - 家长会话使用 HMAC 签名 Cookie（`HttpOnly` + `SameSite=Lax`），`parentSessionVersion` 递增即可让旧会话全部失效；修改密码必须同步下发新 Cookie。
    - 算术题答案只保存在服务端内存（`createMathChallenge`），token 仅携带 nonce 与过期时间，且一次性使用，禁止把答案写回 token。
    - 可选的 `ALLOWED_HOSTS` 用于校验入站 Host（缓解 DNS rebinding）：`src/middleware.ts` 已对全部 `/api/*` 统一拦截，新增需要鉴权的路由时也应走 `requireParentAuth()` 以获得同源校验。
-   - 云端 STT 等会消耗额度的公开接口必须经过 `rate-limit.ts` 限流。
-5. **优雅降级（儿童端零报错）**：
+   - 云端 STT 等会消耗额度的公开接口必须经过 `rate-limit.ts` 限流。仅当设置 `TRUST_PROXY_HEADERS=1` 时才信任反向代理写入的 `X-Real-IP` 做按来源限流；默认所有请求共用同一额度，避免伪造请求头绕过限流。
+   - 进度 / 复习提交的 `itemKey` 必须属于**当前单元**（`unitHasCurriculumItem()`），同一批 `practicedItems` 不得重复；禁止再使用全局词库校验。
+5. **语音凭证与奖励反作弊**：
+   - 云端 STT 转写成功且请求声明 `voiceProofPurpose` 时，`/api/speech/stt` 签发一次性语音凭证（`voice_proofs` 表仅存 SHA-256 哈希与证据，TTL 2 分钟，最多保留 200 条）。
+   - 「半价投喂」与「剧场开口说加星」必须在同一事务内通过 `consumeVoiceProof()` 校验并消费；browser 模式可不强制凭证（本地鼓励优先），但不得把未验证的录音当作云端成果。
+   - 新增任何语音奖励 / 折扣逻辑都必须复用该凭证机制，禁止直接信任客户端传入的 `usedVoice` / `spokenDiscount`。
+6. **优雅降级（儿童端零报错）**：
    - `POST /api/speech/tts` 在 `browser` 模式或上游 Edge-TTS / OpenAI TTS 异常时，必须返回 **HTTP 200 `{ fallback: "browser" }`**，由前端 `useSpeech` 静默切至 `window.speechSynthesis`，不得返回 500 阻塞孩子点读。
    - `POST /api/agent/chat` 与 `/api/agent/freetalk` 在未配置 LLM 或模型调用超时/解析失败时，自动降级到 `fallback-agent.ts` 并返回 `usedFallback: true`。
 
@@ -144,7 +151,12 @@ dinotalk/
 - **零挫败与脚手架**：
   - `RoleplayStageTab` 与 `tutor-agent.ts` 每次回复必须保证提供 **2–3 个可直接慢速试听或点击作答的 `nextSuggestions` 提示气泡**。
   - `pronunciation-scorer.ts` 与 `srs.ts` 严禁严厉扣分或进度清零（答错最多降 1 级熟练度，始终给予正向鼓励）。
-  - `mini-games-logic.ts` 负责生成闯关游戏 3 轮题目，必须保证所有题目目标词都必然出现在候选选项/泡泡池中且无重复（由 `mini-games-logic.test.ts` 对全单元校验）。
+  - `mini-games-logic.ts` 负责生成闯关游戏 4 轮题目（听音选图 / 翻牌配对 / 单词泡泡 / CVC 拼读积木），必须保证所有题目目标词都必然出现在候选选项/泡泡池中且无重复（由 `mini-games-logic.test.ts` 对全单元校验）。
+  - **复习题型渐进**：`/api/review` 依据 `masteryLevel` 下发 `questionMode`（单词/句型：`listen_read` → `blind_listen` → `speak_card`；拼读：`listen_read` → `blind_listen`），答错只标记 `reviewMissPending`，不重复扣星或重复计数。
+  - **句型进入复习库**：核心 `SentencePattern` 以 `itemType: "sentence"` 参与 SRS，与单词、拼读共用掌握墙与复习队列。
+- **奖励与装扮一致性**：
+  - `PET_ACCESSORIES` 必须标注 `slot`（hat / face / neck / hand），由 `applyAccessoryEquipWithSlot()` 保证同槽位互斥、不同槽位可叠加。
+  - 带 `unlockUnitId` 的关卡奖励装扮只能由「该关满 4 星」自动赠送，禁止用星星购买；`DINO_SKINS` 新肤色必须提供完整配色字段，并由 `select_avatar` 校验等级与星星。
 - **儿童安全护栏**：`tutor-agent.ts` 的 System Prompt 严禁暴力、恐怖、成人或负面说教内容；LLM 返回的 `completedGoalIds` 和 `masteredWords` 必须经 `parseAgentJson()` 按当前单元合法列表白名单过滤，防止模型幻觉污染进度。
 - **触控友好与无外链依赖**：儿童操作按钮高度 `>= 48px`，矢量插画与音效全部本地内置（SVG + Web Audio API），禁止依赖易失效的外部图片或音频 CDN。
 
@@ -153,13 +165,18 @@ dinotalk/
 ## 4. 常见扩展指南
 
 ### 新增教学单元或激活 L1 / L2 关卡
-1. 在 `src/data/curriculum/` 中参照 `UnitDef`（`types.ts`）编写新单元数据，并确保每个 `VocabCard.id` 与 `PhonicsItem.id` 全局唯一（例如 `l1-u1-apple`）。
+1. 在 `src/data/curriculum/` 中参照 `UnitDef`（`types.ts`）编写新单元数据，并确保每个 `VocabCard.id`、`PhonicsItem.id` 与 `SentencePattern.id` 全局唯一（例如 `l1-u1-apple`）。
 2. 为每个 `roleplay.goals` 配置唯一的 `id`、`keywords` 及对应的 `goalReplies[goal.id]`，保证无外部 LLM 时也能顺畅完成 3 步情景剧场。
 3. 在 `src/data/curriculum/index.ts` 注册单元或更新 `CURRICULUM_LEVELS` 状态；如有新 `visualKey` / `sceneKey`，同步补充 `src/components/illustrations/visual-keys.ts`（`curriculum.test.ts` 会校验每个 key 都有对应插画）。
 4. 更新并运行 `src/data/curriculum/curriculum.test.ts` 验证数据完整性。
 
 ### 接入新的 OpenAI 兼容模型预设或语音音色
 - 模型预设集中管理于 `src/lib/ai/presets.ts`（`LLM_PRESETS`、`EN_VOICE_OPTIONS`、`ZH_VOICE_OPTIONS`），新增条目后前端家长控制台会自动渲染。
+
+### 新增恐龙肤色、装扮或关卡奖励
+1. 在 `src/data/curriculum/index.ts` 的 `DINO_SKINS` / `PET_ACCESSORIES` 中添加条目：装扮必须填写 `slot`，关卡奖励装扮需填写 `unlockUnitId` 且 `costStars` 设为 0。
+2. 若是全新外观图层，同步在 `src/components/illustrations/DinoCharacter.tsx` 补充 SVG 绘制，并确认 `curriculum.test.ts` 与 `visual-keys.ts` 校验通过。
+3. 更新 `README.md` 中肤色 / 装扮数量等文案，并运行 `/pet` 页面手动确认购买、佩戴、切换与满星赠送流程。
 
 ---
 

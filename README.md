@@ -16,28 +16,29 @@
 
 ## 📚 课程内容体系（循序渐进 L0 → L2）
 
-系统内置 L0–L2 三级成长路线，当前版本完整交付 **L0 启蒙岛全部 10 个高频生活单元**（约 80+ 核心生活词、30 句实用短句、全部 26 个字母自然拼读 + CVC 拼读大合体）：
+系统内置 L0–L2 三级成长路线，当前版本完整交付 **L0 启蒙岛全部 10 个高频生活单元**（104 个核心生活词、30 句实用短句、全部 26 个字母大小写自然拼读，并从 U2 起逐步加入渐进式 CVC 拼读）：
 
 | 关卡 | 主题名称 | 核心词汇精选 | 目标核心句型 | 自然拼读 | AI 情景剧场任务 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **U1** | 你好，新朋友！ | `hello, hi, bye, morning, name, friend` | `Hello! I am ...` / `Nice to meet you!` | **S, A, T** | 在阳光码头认识 Dino 并自我介绍 |
-| **U2** | 魔法彩虹画板 | `red, blue, yellow, green, orange, pink, purple` | `It is red.` / `I like blue.` | **P, I, N** | 帮迷糊小画家找回丢失的彩虹颜色 |
-| **U3** | 生日派对数一数 | `one ~ ten, cake, candle` | `I am seven.` / `Seven candles!` | **C, K, E** | 为小恐龙准备 7 岁生日派对点蜡烛 |
-| **U4** | 温暖的恐龙之家 | `mom, dad, sister, brother, grandma, grandpa, baby` | `This is my mom.` / `I love my dad!` | **H, R, M** | 翻看恐龙家庭相册认识每位家人 |
-| **U5** | 阳光水果店 | `apple, banana, orange, grape, pear, milk, bread, water` | `An apple, please!` / `Thank you!` | **D, G, O** | 当小顾客在森林水果店挑选零食水果 |
-| **U6** | 奇妙动物园 | `cat, dog, bird, fish, rabbit, panda, tiger, elephant` | `It's a panda!` / `Look at the dog.` | **U, L, F** | 在动物园里帮饲养员寻找躲起来的小动物 |
-| **U7** | 动一动身体 | `head, eye, nose, mouth, ear, hand, foot, jump, clap` | `Touch your nose!` / `Clap your hands!` | **B, J, Z** | 玩“Dino Says”趣味动作指令游戏 |
-| **U8** | 整理我的小书包 | `book, pen, pencil, bag, ruler, eraser, desk, teacher` | `I have a pencil.` / `My bag is ready!` | **W, V, Y** | 上学前清点文具自己整理小书包 |
-| **U9** | 小小天气预报员 | `sunny, rainy, cloudy, windy, snowy, sun, cloud, rainbow` | `It's sunny today!` / `Let's play!` | **X, Q** | 观察窗外天气决定今天出门去哪玩 |
-| **U10** | 神奇玩具箱 | `ball, car, doll, robot, kite, bear, happy, fun` | `This is my robot.` / `Let's share!` | **CVC 拼读** | 在玩具屋邀请好朋友一起分享玩具 |
+| **U1** | 你好，新朋友！ | `hello, hi, bye, morning, name, friend, yes, no` | `Hello! I am ...` / `Nice to meet you!` | **S, A, T** | 在阳光码头认识 Dino 并自我介绍 |
+| **U2** | 魔法彩虹画板 | `red, blue, yellow, green, orange, pink, purple, black, white, brown` | `It is red.` / `I like blue.` | **P, I, N + CVC** | 帮迷糊小画家找回丢失的彩虹颜色 |
+| **U3** | 生日派对数一数 | `one ~ ten, cake, candle` | `I am seven.` / `Seven candles!` | **C, K, E + CVC** | 为小恐龙准备 7 岁生日派对点蜡烛 |
+| **U4** | 温暖的恐龙之家 | `mom, dad, sister, brother, grandma, grandpa, baby, big, small` | `This is my mom.` / `I love my dad!` | **H, R, M + CVC** | 翻看恐龙家庭相册认识每位家人 |
+| **U5** | 阳光水果店 | `apple, banana, orange, grape, pear, milk, bread, water, eat, drink, hungry, please` | `An apple, please!` / `Thank you!` | **D, G, O + CVC** | 当小顾客在森林水果店挑选零食水果 |
+| **U6** | 奇妙动物园 | `cat, dog, bird, fish, rabbit, panda, tiger, elephant, run, swim, fly` | `It's a panda!` / `Look at the dog.` | **U, L, F + CVC** | 在动物园里帮饲养员寻找躲起来的小动物 |
+| **U7** | 动一动身体 | `head, eye, nose, mouth, ear, hand, foot, jump, clap, open, close` | `Touch your nose!` / `Clap your hands!` | **B, J, Z + CVC** | 玩“Dino Says”趣味动作指令游戏 |
+| **U8** | 整理我的小书包 | `book, pen, pencil, bag, ruler, eraser, desk, teacher, in, on, under` | `I have a pencil.` / `My bag is ready!` | **W, V, Y + CVC** | 上学前清点文具自己整理小书包 |
+| **U9** | 小小天气预报员 | `sunny, rainy, cloudy, windy, snowy, sun, cloud, rainbow, hot, cold` | `It's sunny today!` / `Let's play!` | **X, Q + CVC** | 观察窗外天气决定今天出门去哪玩 |
+| **U10** | 神奇玩具箱 | `ball, car, doll, robot, kite, bear, happy, fun, sad, sorry` | `This is my robot.` / `Let's share!` | **CVC 拼读大合体** | 在玩具屋邀请好朋友一起分享玩具 |
 
 > 💡 后续规划中的 **L1 探索岛**（日常作息、餐厅点餐、公园游玩等）和 **L2 冒险岛**（故事复述、趣味科普）已在冒险地图中预留进阶路线。
 
 ### 其他好玩功能
-- **🎁 每日 3 分钟复习宝箱（`/review`）**：根据儿童版间隔重复记忆曲线（SRS）自动抽取快遗忘的单词和字母音，答对即开宝箱领星星。
-- **🦕 小恐龙宠物小屋（`/pet`）**：学习赚取的星星可以给小恐龙 Dino 买苹果、草莓、牛奶、蛋糕喂食，还能解锁小皇冠、魔法帽、红围巾、太阳镜等装扮！
+- **🎁 每日 3 分钟复习宝箱（`/review`）**：根据儿童版间隔重复记忆曲线（SRS）自动抽取快遗忘的单词、字母音和核心句型；题型会随熟练度自动升级（听音选图 → 盲听辨音 → 开口说卡片，拼读在高熟练度下转为盲听辨音），答对即开宝箱领星星。
+- **🦕 小恐龙宠物小屋（`/pet`）**：学习赚取的星星可以给小恐龙 Dino 买苹果、草莓、牛奶、蛋糕喂食——大声读出美食英文名还能 **半价投喂**！还能解锁 4 种恐龙肤色和 16 件装扮（小皇冠、魔法帽、红围巾、太阳镜、星光披风、魔法棒等），每关满 4 星还会免费赠送 1 件专属荣誉装扮。
 - **💬 和 Dino 自由聊聊（`/chat`）**：内置「问单词怎么说（如“苹果用英语怎么说？”）」「动物猜猜乐」「超短英文故事」等趣味话题。
 - **👀 贴心护眼提醒**：支持家长自定义学习护眼间隔（默认 15 分钟），到点温柔弹出休息提示。
+- **⏱️ 今日冒险能量条**：首页实时显示今天的学习分钟数与家长设定的每日目标完成度，达标后 Dino 会开心地为你欢呼。
 
 ---
 
@@ -129,16 +130,19 @@ cp .env.example .env.local
   - **Edge-TTS（默认推荐）**：免费自然的神经童声（默认英文 `en-US-AnaNeural`，中文 `zh-CN-XiaoxiaoNeural`），并在本地自动缓存音频，常用词第二次播放零延迟；若网络暂时不可用，孩子端会自动无感切换为浏览器原生朗读。
   - **OpenAI 兼容语音** / **浏览器原生离线语音**：可按需一键切换。
   - **语速调节**：建议 7 岁零基础先从 **`0.85x`** 开始，熟悉后调回 `0.95x ~ 1.0x`。
+  - **中文引导自动朗读**：默认开启。Dino 会先读完英文回复，再温柔朗读中文提示，帮助识字量还在积累的孩子纯靠听觉顺畅互动（可在本页签关闭）。
 - **STT 听孩子说话**：
   - **MiniMax 语音识别（国内推荐）**：国内直连、识别准确率高且延迟低，默认接口 `https://api.minimax.cn/v1/speech_to_text`、模型 `asr-1.0`（海外账号可改用 `https://api.minimax.io/v1/speech_to_text`）。前端录音会自动重采样并封装为 16kHz 单声道 WAV 上传，全面兼容电脑浏览器与 iPad Safari PWA，填好 Key 后可点 **「测试语音识别 STT」** 一键测通。
-  - **云端 Whisper 接口**：兼容 OpenAI `/v1/audio/transcriptions` 格式，自带当前单元词库识别偏置。
+  - **云端 Whisper 接口**：兼容 OpenAI `/v1/audio/transcriptions` 格式（仅官方 `api.openai.com` 强制要求 Key，第三方中转可留空），自带当前单元词库识别偏置。
   - **浏览器原生语音识别**：零配置免费使用，适合桌面端 Chrome / Edge 快速体验。
+  - 自由聊天会按话题自动切换识别语言（「问单词」用中文，猜谜/英文对话用英文）。
 
 ### 3. 查看学习成长报告
 切换到 **「学习成长报告」**，可以直观看到：
 - 近 7 天每天学习时长与完成任务数柱状图；
 - L0 全部 10 个单元的 4 项环节完成度；
-- 孩子已掌握的单词与拼读熟练度墙；
+- 词汇、拼读与句型掌握墙，自动区分「⚠️ 重点巩固」与「✅ 稳步掌握」；
+- 今晚 1 分钟亲子英语陪读卡（按最近进度自动生成，含 1 句可共读例句）；
 - 孩子最近与 AI 小恐龙的真实英文对话文字回顾。
 
 ---
@@ -150,7 +154,7 @@ cd dinotalk
 
 pnpm typecheck   # TypeScript 类型检查
 pnpm lint        # ESLint 代码检查
-pnpm test        # 运行 Vitest 单元测试（SRS、发音评分、STT/WAV、游戏出题、Agent 解析、课程校验、路由安全）
+pnpm test        # 运行 Vitest 单元测试（SRS、发音评分、STT/WAV、文本清洗、游戏出题、Agent 解析、课程校验、路由安全）
 pnpm build       # 构建生产版本
 pnpm test:e2e    # 端到端测试（自动构建并在 3100 端口用临时 DATA_DIR 启动服务）
 ```
@@ -164,6 +168,7 @@ pnpm test:e2e    # 端到端测试（自动构建并在 3100 端口用临时 DAT
 | `ALLOWED_ENDPOINT_HOSTS` | 出站白名单，限制 LLM / TTS / STT 可访问的域名，支持 `.home.arpa` 后缀匹配 |
 | `BLOCK_PRIVATE_ENDPOINTS=1` | 禁止访问内网与回环地址（默认允许，便于连接本机 Ollama / 局域网中转） |
 | `ALLOWED_HOSTS` | 入站 Host 白名单（含端口），缓解 DNS rebinding；设置后请包含你实际访问的地址 |
+| `TRUST_PROXY_HEADERS=1` | 使用受信反向代理写入的 `X-Real-IP` 做按 IP 限流。仅在代理覆盖该请求头且客户端不能直连应用时开启。默认使用共享限流额度 |
 | `SESSION_SECRET` | 家长会话签名密钥；不填会自动生成并保存在 `data/.session-secret` |
 
 ---

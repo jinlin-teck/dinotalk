@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Send, Sparkles, Volume2 } from "lucide-react";
 import { AppShell, type ProfileSummary } from "@/components/AppShell";
 import { DinoCharacter } from "@/components/illustrations/DinoCharacter";
@@ -17,9 +17,12 @@ interface ChatTurn {
 }
 
 export default function FreeTalkPage() {
-  const [profile, setProfile] = useState<(ProfileSummary & { equippedAccessories?: string[] }) | null>(null);
+  const [profile, setProfile] = useState<
+    (ProfileSummary & { avatarId?: string; equippedAccessories?: string[] }) | null
+  >(null);
   const [dueReviewCount, setDueReviewCount] = useState(0);
   const [activeTopicId, setActiveTopicId] = useState(FREETALK_TOPICS[0].id);
+  const [sttLang, setSttLang] = useState<"en" | "zh">("zh");
   const [sessionId, setSessionId] = useState<number | undefined>(undefined);
   const [messages, setMessages] = useState<ChatTurn[]>([
     {
@@ -36,8 +39,31 @@ export default function FreeTalkPage() {
   const [sending, setSending] = useState(false);
   const [draft, setDraft] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
+  const topicSeqRef = useRef(0);
+  const requestAbortRef = useRef<AbortController | null>(null);
 
   const speech = useSpeech();
+  const { speak, speakSequence, ttsAutoPlayZh } = speech;
+
+  const speakAssistantReply = useCallback(
+    (englishText: string, chineseText?: string) => {
+      if (ttsAutoPlayZh && chineseText?.trim()) {
+        void speakSequence([
+          { text: englishText, lang: "en" },
+          { text: chineseText, lang: "zh" },
+        ]);
+      } else {
+        void speak(englishText, { lang: "en" });
+      }
+    },
+    [speak, speakSequence, ttsAutoPlayZh]
+  );
+
+  useEffect(() => {
+    return () => {
+      requestAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     fetch("/api/profile")
@@ -58,7 +84,16 @@ export default function FreeTalkPage() {
     const topic = FREETALK_TOPICS.find((t) => t.id === topicId);
     if (!topic) return;
     soundEffects.playClick();
+    topicSeqRef.current += 1;
+    speech.cancelListening();
+    speech.clearSttError();
+    requestAbortRef.current?.abort();
+    requestAbortRef.current = null;
+    setSending(false);
+    setMood("happy");
+    setDraft("");
     setActiveTopicId(topicId);
+    setSttLang(topicId === "ask-word" ? "zh" : "en");
     setSessionId(undefined);
     setSuggestions(topic.quickChips);
     setMessages([
@@ -69,12 +104,18 @@ export default function FreeTalkPage() {
         chineseText: topic.starterZh,
       },
     ]);
-    speech.speak(topic.starterPromptEn, { lang: "en" });
+    speakAssistantReply(topic.starterPromptEn, topic.starterZh);
   };
 
   const sendMessage = async (text: string) => {
     const clean = text.trim();
-    if (!clean || sending) return;
+    if (!clean || requestAbortRef.current) return;
+
+    const reqSeq = topicSeqRef.current;
+    speech.cancelListening();
+    const controller = new AbortController();
+    requestAbortRef.current = controller;
+
     soundEffects.playClick();
     setSending(true);
     setMood("thinking");
@@ -89,8 +130,10 @@ export default function FreeTalkPage() {
           topicId: activeTopicId,
           userText: clean,
         }),
+        signal: controller.signal,
       });
       const data = await res.json().catch(() => null);
+      if (reqSeq !== topicSeqRef.current) return;
       if (!res.ok || !data?.response) {
         throw new Error(data?.error || "freetalk_failed");
       }
@@ -107,8 +150,9 @@ export default function FreeTalkPage() {
           chineseText: resp.chineseHint,
         },
       ]);
-      speech.speak(resp.englishReply, { lang: "en" });
+      speakAssistantReply(resp.englishReply, resp.chineseHint);
     } catch {
+      if (reqSeq !== topicSeqRef.current) return;
       setMood("happy");
       setMessages((prev) => [
         ...prev,
@@ -120,8 +164,13 @@ export default function FreeTalkPage() {
         },
       ]);
     } finally {
-      setSending(false);
-      setDraft("");
+      if (requestAbortRef.current === controller) {
+        requestAbortRef.current = null;
+      }
+      if (reqSeq === topicSeqRef.current) {
+        setSending(false);
+        setDraft("");
+      }
     }
   };
 
@@ -132,6 +181,7 @@ export default function FreeTalkPage() {
         <div className="bg-white rounded-3xl border-2 border-emerald-200 p-4 sm:p-5 flex items-center gap-4">
           <DinoCharacter
             mood={mood}
+            avatarId={profile?.avatarId}
             equippedAccessories={profile?.equippedAccessories ?? []}
             size={92}
             className="shrink-0"
@@ -141,7 +191,7 @@ export default function FreeTalkPage() {
               和 {profile?.companionName ?? "Dino"} 自由聊英语
             </h1>
             <p className="text-xs sm:text-sm text-slate-600 font-medium mt-0.5">
-              可以用中文问单词怎么说，也可以用英文跟 Dino 玩猜谜和聊天哦！
+              可以用中文问单词怎么说，也可以用英文跟 Dino 玩多轮动物猜谜、听连载小故事！
             </p>
           </div>
         </div>
@@ -173,7 +223,7 @@ export default function FreeTalkPage() {
               className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
             >
               <div
-                className={`max-w-[88%] sm:max-w-[75%] rounded-3xl px-4 py-3 ${
+                className={`max-w-[90%] sm:max-w-[75%] rounded-3xl px-4 py-3 ${
                   m.role === "user"
                     ? "bg-emerald-500 text-white rounded-br-md"
                     : "bg-amber-50 border-2 border-amber-200 text-slate-800 rounded-bl-md"
@@ -182,13 +232,24 @@ export default function FreeTalkPage() {
                 <div className="flex items-start gap-2">
                   <span className="font-extrabold text-base sm:text-lg">{m.englishText}</span>
                   {m.role === "assistant" && (
-                    <button
-                      type="button"
-                      onClick={() => speech.speak(m.englishText, { lang: "en" })}
-                      className="p-1.5 rounded-full bg-white hover:bg-amber-100 text-amber-700 shrink-0"
-                    >
-                      <Volume2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        aria-label="再听一遍"
+                        onClick={() => speech.speak(m.englishText, { lang: "en" })}
+                        className="p-1.5 rounded-full bg-white hover:bg-amber-100 text-amber-700"
+                      >
+                        <Volume2 className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="慢速再听一遍"
+                        onClick={() => speech.speak(m.englishText, { lang: "en", slow: true })}
+                        className="px-1.5 py-0.5 rounded-full bg-white hover:bg-amber-100 text-xs font-bold text-amber-700"
+                      >
+                        🐌
+                      </button>
+                    </div>
                   )}
                 </div>
                 {m.chineseText && (
@@ -218,51 +279,106 @@ export default function FreeTalkPage() {
           ))}
         </div>
 
-        {/* Mic + Input */}
-        <div className="bg-white rounded-3xl border-2 border-slate-200 p-4 flex flex-col sm:flex-row items-center gap-3">
-          <button
-            type="button"
-            disabled={sending}
-            onClick={() => {
-              if (speech.isListening) {
-                speech.stopListening();
-              } else {
-                speech.startListening("hello, apple, panda, blue, happy", (t) => sendMessage(t));
-              }
-            }}
-            className={`w-full sm:w-auto min-h-[56px] px-6 rounded-2xl font-black text-sm border-b-4 transition flex items-center justify-center gap-2 shrink-0 ${
-              speech.isListening
-                ? "bg-rose-500 text-white border-rose-700 animate-pulse"
-                : "bg-emerald-500 hover:bg-emerald-600 text-white border-emerald-700"
-            }`}
-          >
-            {speech.isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-            <span>{speech.isListening ? "点此结束" : "语音聊天"}</span>
-          </button>
+        {/* Mic + Language Switch + Input */}
+        <div className="bg-white rounded-3xl border-2 border-slate-200 p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-bold text-slate-500">
+              语音识别语言（“问单词”自动选中文，猜谜/聊天自动选英文）：
+            </span>
+            <div className="inline-flex rounded-xl bg-slate-100 p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  soundEffects.playClick();
+                  setSttLang("zh");
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-extrabold transition ${
+                  sttLang === "zh"
+                    ? "bg-white text-emerald-700 shadow-xs"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                🇨🇳 中文提问
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  soundEffects.playClick();
+                  setSttLang("en");
+                }}
+                className={`px-3 py-1 rounded-lg text-xs font-extrabold transition ${
+                  sttLang === "en"
+                    ? "bg-white text-emerald-700 shadow-xs"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                🇬🇧 英文对话
+              </button>
+            </div>
+          </div>
 
-          <form
-            className="flex-1 w-full flex gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              sendMessage(draft);
-            }}
-          >
-            <input
-              type="text"
-              maxLength={300}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="输入中文或英文，例如：西瓜/苹果用英语怎么说？"
-              className="flex-1 min-h-[50px] rounded-2xl border-2 border-slate-200 focus:border-emerald-400 outline-none px-4 text-sm font-semibold"
-            />
+          <div className="flex flex-col sm:flex-row items-center gap-3">
             <button
-              type="submit"
-              disabled={sending || !draft.trim()}
-              className="min-h-[50px] px-5 rounded-2xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white font-bold flex items-center justify-center"
+              type="button"
+              disabled={sending}
+              onClick={() => {
+                if (speech.isListening) {
+                  speech.stopListening();
+                } else {
+                  const recordingTopic = topicSeqRef.current;
+                  speech.startListening(
+                    "hello, apple, panda, blue, happy",
+                    (text) => {
+                      if (recordingTopic === topicSeqRef.current) {
+                        void sendMessage(text);
+                      }
+                    },
+                    { lang: sttLang }
+                  );
+                }
+              }}
+              className={`relative w-full sm:w-auto min-h-[56px] px-6 rounded-2xl font-black text-sm border-b-4 transition flex items-center justify-center gap-2 shrink-0 ${
+                speech.isListening
+                  ? "bg-rose-500 text-white border-rose-700"
+                  : "bg-emerald-500 hover:bg-emerald-600 text-white border-emerald-700"
+              }`}
             >
-              <Send className="w-5 h-5" />
+              <span
+                ref={speech.audioMeterRef}
+                aria-hidden="true"
+                className={`pointer-events-none absolute inset-0 rounded-[inherit] ring-4 ring-rose-500/25 ${speech.isListening ? "" : "opacity-0"}`}
+              />
+              {speech.isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+              <span>{speech.isListening ? "点此结束" : "语音聊天"}</span>
+              {speech.isListening && speech.listenCountdownSec !== null && (
+                <span className="text-xs opacity-90">({speech.listenCountdownSec}s)</span>
+              )}
             </button>
-          </form>
+
+            <form
+              className="flex-1 w-full flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                sendMessage(draft);
+              }}
+            >
+              <input
+                type="text"
+                maxLength={300}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="输入中文或英文，例如：西瓜/苹果用英语怎么说？"
+                className="flex-1 min-h-[50px] rounded-2xl border-2 border-slate-200 focus:border-emerald-400 outline-none px-4 text-sm font-semibold"
+              />
+              <button
+                type="submit"
+                disabled={sending || !draft.trim()}
+                className="min-h-[50px] px-5 rounded-2xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white font-bold flex items-center justify-center"
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            </form>
+          </div>
         </div>
 
         {speech.sttError && (

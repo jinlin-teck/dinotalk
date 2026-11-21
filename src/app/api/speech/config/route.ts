@@ -19,5 +19,7 @@ export async function GET() {
       })
     : "browser";
 
-  return NextResponse.json({ sttMode });
+  const ttsAutoPlayZh = row ? row.ttsAutoPlayZh === 1 : true;
+
+  return NextResponse.json({ sttMode, ttsAutoPlayZh });
 }

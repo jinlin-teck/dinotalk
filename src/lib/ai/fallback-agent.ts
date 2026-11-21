@@ -12,6 +12,254 @@ export interface TutorResponse {
   isSceneComplete: boolean;
 }
 
+export function personalizeSuggestionChips(
+  chips: SuggestionChip[],
+  childNickname?: string
+): SuggestionChip[] {
+  const cleanName = childNickname?.trim();
+  if (!cleanName || cleanName === "小探险家") {
+    return chips;
+  }
+  return chips.map((chip) => ({
+    ...chip,
+    en: chip.en.replace(/\b(?:Alex|Leo)\b/g, () => cleanName),
+    zh: chip.zh.replace(/(?:Alex|Leo)/g, () => cleanName),
+  }));
+}
+
+interface RiddleDef {
+  id: string;
+  promptEn: string;
+  promptZh: string;
+  answer: string;
+  answerZh: string;
+  keywords: string[];
+  chips: SuggestionChip[];
+}
+
+const OFFLINE_RIDDLES: RiddleDef[] = [
+  {
+    id: "banana",
+    promptEn: "Riddle time! It is yellow and sweet. Monkeys love it! What fruit is it?",
+    promptZh: "来猜猜看：它是黄色的，弯弯的甜甜的，小猴子最爱吃！是什么水果呀？",
+    answer: "banana",
+    answerZh: "香蕉",
+    keywords: ["banana", "bananas", "香蕉"],
+    chips: [
+      { en: "It's a banana!", zh: "是香蕉 banana！", icon: "🍌" },
+      { en: "It's an apple!", zh: "是苹果 apple！", icon: "🍎" },
+    ],
+  },
+  {
+    id: "cat",
+    promptEn: "Riddle time! It is small and cute. It says meow, meow! What animal is it?",
+    promptZh: "猜谜时间：它小小的毛茸茸，会喵喵叫！是哪种小动物呀？",
+    answer: "cat",
+    answerZh: "小猫",
+    keywords: ["cat", "cats", "小猫", "猫"],
+    chips: [
+      { en: "It's a cat!", zh: "是小猫 cat！", icon: "🐱" },
+      { en: "It's a dog!", zh: "是小狗 dog！", icon: "🐶" },
+    ],
+  },
+  {
+    id: "sun",
+    promptEn: "Riddle time! It is big, yellow, and hot in the sky. What is it?",
+    promptZh: "猜谜时间：它大大的、黄黄的、热热的，每天挂在天上！它是什么？",
+    answer: "sun",
+    answerZh: "太阳",
+    keywords: ["sun", "sunny", "太阳"],
+    chips: [
+      { en: "It's the sun!", zh: "是太阳 sun！", icon: "☀️" },
+      { en: "It's a cloud!", zh: "是云朵 cloud！", icon: "☁️" },
+    ],
+  },
+  {
+    id: "elephant",
+    promptEn: "Riddle time! It is very big and gray. It has a long nose! What animal is it?",
+    promptZh: "猜谜时间：它超级大，有长长的鼻子和大扇子耳朵！它是谁？",
+    answer: "elephant",
+    answerZh: "大象",
+    keywords: ["elephant", "elephants", "大象"],
+    chips: [
+      { en: "It's an elephant!", zh: "是大象 elephant！", icon: "🐘" },
+      { en: "It's a tiger!", zh: "是老虎 tiger！", icon: "🐯" },
+    ],
+  },
+  {
+    id: "apple",
+    promptEn: "Riddle time! It is round, red, and sweet. Crunch, crunch! What fruit is it?",
+    promptZh: "猜谜时间：它圆圆的红红的，咬一口咔嚓脆甜！是什么水果？",
+    answer: "apple",
+    answerZh: "苹果",
+    keywords: ["apple", "apples", "苹果"],
+    chips: [
+      { en: "It's an apple!", zh: "是苹果 apple！", icon: "🍎" },
+      { en: "It's a pear!", zh: "是梨子 pear！", icon: "🍐" },
+    ],
+  },
+  {
+    id: "fish",
+    promptEn: "Riddle time! It lives in water and can swim fast! What animal is it?",
+    promptZh: "猜谜时间：它住在水里，吐着泡泡会游得飞快！它是哪种小动物？",
+    answer: "fish",
+    answerZh: "小鱼",
+    keywords: ["fish", "小鱼", "鱼"],
+    chips: [
+      { en: "It's a fish!", zh: "是小鱼 fish！", icon: "🐟" },
+      { en: "It's a bird!", zh: "是小鸟 bird！", icon: "🐦" },
+    ],
+  },
+  {
+    id: "rabbit",
+    promptEn: "Riddle time! It is white with two long ears. It can jump! What animal is it?",
+    promptZh: "猜谜时间：它白白的，长着两只长耳朵，最会蹦蹦跳！它是谁？",
+    answer: "rabbit",
+    answerZh: "小兔子",
+    keywords: ["rabbit", "rabbits", "兔子"],
+    chips: [
+      { en: "It's a rabbit!", zh: "是兔子 rabbit！", icon: "🐰" },
+      { en: "It's a panda!", zh: "是大熊猫 panda！", icon: "🐼" },
+    ],
+  },
+  {
+    id: "rainbow",
+    promptEn: "Riddle time! It comes after rain. It has seven colors in the sky! What is it?",
+    promptZh: "猜谜时间：下完雨后会出现在天空，有七种魔法颜色！它是什么？",
+    answer: "rainbow",
+    answerZh: "彩虹",
+    keywords: ["rainbow", "彩虹"],
+    chips: [
+      { en: "It's a rainbow!", zh: "是彩虹 rainbow！", icon: "🌈" },
+      { en: "It's a cloud!", zh: "是白云 cloud！", icon: "☁️" },
+    ],
+  },
+  {
+    id: "dog",
+    promptEn: "Riddle time! It says woof, woof! It can run and loves its friend! What is it?",
+    promptZh: "猜谜时间：它会汪汪叫、摇尾巴，跑得很快最喜欢好朋友！它是谁？",
+    answer: "dog",
+    answerZh: "小狗",
+    keywords: ["dog", "dogs", "小狗", "狗"],
+    chips: [
+      { en: "It's a dog!", zh: "是小狗 dog！", icon: "🐶" },
+      { en: "It's a cat!", zh: "是小猫 cat！", icon: "🐱" },
+    ],
+  },
+  {
+    id: "bird",
+    promptEn: "Riddle time! It is small and can fly high in the blue sky! What is it?",
+    promptZh: "猜谜时间：它小小的有翅膀，能在蓝天高高飞翔！是什么动物？",
+    answer: "bird",
+    answerZh: "小鸟",
+    keywords: ["bird", "birds", "小鸟", "鸟"],
+    chips: [
+      { en: "It's a bird!", zh: "是小鸟 bird！", icon: "🐦" },
+      { en: "It's a fish!", zh: "是小鱼 fish！", icon: "🐟" },
+    ],
+  },
+  {
+    id: "cake",
+    promptEn: "Riddle time! We put candles on it and sing Happy Birthday! What food is it?",
+    promptZh: "猜谜时间：过生日时我们会在它上面插蜡烛、唱生日歌！是什么美食？",
+    answer: "cake",
+    answerZh: "蛋糕",
+    keywords: ["cake", "蛋糕"],
+    chips: [
+      { en: "It's a cake!", zh: "是蛋糕 cake！", icon: "🎂" },
+      { en: "It's bread!", zh: "是面包 bread！", icon: "🍞" },
+    ],
+  },
+  {
+    id: "panda",
+    promptEn: "Riddle time! It is black and white. It loves bamboo! What animal is it?",
+    promptZh: "猜谜时间：它是黑白色的，有圆圆黑眼圈，最爱吃竹子！它是谁？",
+    answer: "panda",
+    answerZh: "大熊猫",
+    keywords: ["panda", "pandas", "熊猫"],
+    chips: [
+      { en: "It's a panda!", zh: "是大熊猫 panda！", icon: "🐼" },
+      { en: "It's a bear!", zh: "是小熊 bear！", icon: "🧸" },
+    ],
+  },
+];
+
+interface MiniStoryDef {
+  englishReply: string;
+  chineseHint: string;
+  masteredWords: string[];
+  chips: SuggestionChip[];
+}
+
+const OFFLINE_STORIES: MiniStoryDef[] = [
+  {
+    englishReply:
+      "One sunny day, Dino meets a cute rabbit. They share a sweet cake and feel so happy!",
+    chineseHint:
+      "故事第 1 集：晴朗的一天，Dino 遇见了一只可爱的小兔子，它们一起分享甜蛋糕，开心极啦！",
+    masteredWords: ["sunny", "rabbit", "cake", "happy"],
+    chips: [
+      { en: "Let's share!", zh: "我们一起分享！", icon: "🎂" },
+      { en: "Tell me more!", zh: "听下一集故事！", icon: "📖" },
+    ],
+  },
+  {
+    englishReply:
+      "Next, Dino and Rabbit see a blue bird. The bird can fly high over a big rainbow!",
+    chineseHint:
+      "故事第 2 集：接着，Dino 和小兔子看见一只蓝色小鸟，它飞高高穿过了大彩虹！",
+    masteredWords: ["blue", "bird", "fly", "rainbow"],
+    chips: [
+      { en: "Birds can fly!", zh: "小鸟会飞！", icon: "🐦" },
+      { en: "Tell me more!", zh: "继续听故事！", icon: "✨" },
+    ],
+  },
+  {
+    englishReply:
+      "Then Dino is hungry! He goes to the fruit shop and says: Two red apples, please!",
+    chineseHint:
+      "故事第 3 集：Dino 肚子饿啦！它跑到水果店礼貌地说：请给我两个红苹果！",
+    masteredWords: ["hungry", "two", "red", "apple"],
+    chips: [
+      { en: "Two red apples, please!", zh: "请给我两个红苹果！", icon: "🍎" },
+      { en: "Tell me more!", zh: "继续听故事！", icon: "✨" },
+    ],
+  },
+  {
+    englishReply:
+      "At the zoo, a black and white panda waves hello! A brown dog runs and jumps with them.",
+    chineseHint:
+      "故事第 4 集：在动物园里，黑白大熊猫挥手说你好！棕色小狗也跑来一起蹦蹦跳！",
+    masteredWords: ["black", "white", "panda", "dog"],
+    chips: [
+      { en: "Hello, panda!", zh: "你好，大熊猫！", icon: "🐼" },
+      { en: "Tell me more!", zh: "继续听故事！", icon: "✨" },
+    ],
+  },
+  {
+    englishReply:
+      "Oh! It is windy now! Dino opens his toy box and flies a big yellow kite!",
+    chineseHint:
+      "故事第 5 集：呼呼刮风啦！Dino 打开玩具箱，放起一只大大的黄色风筝！",
+    masteredWords: ["windy", "yellow", "kite"],
+    chips: [
+      { en: "Fly a kite!", zh: "放风筝！", icon: "🪁" },
+      { en: "Tell me more!", zh: "听大结局！", icon: "🌟" },
+    ],
+  },
+  {
+    englishReply:
+      "At home, Dino hugs Mom and Dad. I love my family! What a fun day!",
+    chineseHint:
+      "故事大结局：回到温暖的家，Dino 抱抱爸爸妈妈说“我爱我家”！真是快乐的一天！",
+    masteredWords: ["mom", "dad", "fun"],
+    chips: [
+      { en: "I love my family!", zh: "我爱我的一家人！", icon: "🏠" },
+      { en: "Give me another riddle!", zh: "换个猜谜玩！", icon: "🎲" },
+    ],
+  },
+];
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -46,7 +294,8 @@ function detectMatchingWords(unit: UnitDef, normalizedInput: string): string[] {
 export function runFallbackRoleplayTurn(
   unit: UnitDef,
   userText: string,
-  alreadyCompletedGoalIds: string[]
+  alreadyCompletedGoalIds: string[],
+  childNickname?: string
 ): TutorResponse {
   const norm = normalizeInput(userText);
   const completedSet = new Set(
@@ -94,21 +343,24 @@ export function runFallbackRoleplayTurn(
       emotion: reply.emotion,
       praise: reply.praise,
       completedGoalIds: completedArr,
-      nextSuggestions: reply.nextSuggestions,
+      nextSuggestions: personalizeSuggestionChips(reply.nextSuggestions, childNickname),
       masteredWords: matchedWords,
       isSceneComplete: false,
     };
   }
 
   const nextGoal = remainingGoals[0] ?? unit.roleplay.goals[0];
-  const fallbackChips: SuggestionChip[] = [
-    {
-      en: nextGoal.targetExampleEn,
-      zh: `试试说：${nextGoal.titleZh}`,
-      icon: "💬",
-    },
-    ...(unit.roleplay.openingSuggestions.slice(0, 1)),
-  ];
+  const fallbackChips: SuggestionChip[] = personalizeSuggestionChips(
+    [
+      {
+        en: nextGoal.targetExampleEn,
+        zh: `试试说：${nextGoal.titleZh}`,
+        icon: "💬",
+      },
+      ...unit.roleplay.openingSuggestions.slice(0, 1),
+    ],
+    childNickname
+  );
 
   return {
     englishReply: `Good try! Let's say: ${nextGoal.targetExampleEn}`,
@@ -185,7 +437,32 @@ function findVocabByExplicitQuery(
   return candidates[0]?.item ?? null;
 }
 
-export function runFallbackFreeTalkTurn(userText: string): TutorResponse {
+function riddleSignature(r: RiddleDef): string {
+  return r.promptEn.replace(/^Riddle time!\s*/i, "").toLowerCase().slice(0, 28);
+}
+
+function findActiveRiddleFromHistory(
+  history: Array<{ role: "assistant" | "user"; englishText: string }>
+): RiddleDef | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    if (msg.role !== "assistant") continue;
+    const lower = msg.englishText.toLowerCase();
+    if (!lower.includes("riddle")) return null;
+    const matched = OFFLINE_RIDDLES.find(
+      (r) =>
+        lower.includes(riddleSignature(r)) ||
+        (r.id === "panda" && lower.includes("black and white") && lower.includes("bamboo"))
+    );
+    return matched ?? null;
+  }
+  return null;
+}
+
+export function runFallbackFreeTalkTurn(
+  userText: string,
+  history: Array<{ role: "assistant" | "user"; englishText: string }> = []
+): TutorResponse {
   const raw = userText.trim();
   const norm = normalizeInput(raw);
   const allVocab = getAllVocab();
@@ -199,17 +476,76 @@ export function runFallbackFreeTalkTurn(userText: string): TutorResponse {
     }
   }
 
-  // 2. Explicit activity intents (riddle / story / greeting) before general vocab fallback
-  if (containsWholeEnglishWord(norm, "riddle") || raw.includes("猜") || raw.includes("谜")) {
+  const wantsNewRiddle =
+    containsWholeEnglishWord(norm, "riddle") ||
+    raw.includes("再猜") ||
+    raw.includes("换一个") ||
+    raw.includes("下一个") ||
+    raw.includes("猜") ||
+    raw.includes("谜");
+  const wantsStory =
+    containsWholeEnglishWord(norm, "story") ||
+    norm.includes("tell me more") ||
+    raw.includes("故事");
+  const wantsGreeting =
+    containsWholeEnglishWord(norm, "hello") ||
+    containsWholeEnglishWord(norm, "hi") ||
+    /^(?:你好|嗨|哈喽|早上好)[！!。.~ ]*$/u.test(raw);
+
+  // 1.5 Check if child is answering an active riddle from the previous turn
+  const activeRiddle = findActiveRiddleFromHistory(history);
+  if (activeRiddle && !wantsNewRiddle && !wantsStory && !wantsGreeting) {
+    const hitAnswer = activeRiddle.keywords.some(
+      (kw) => containsWholeEnglishWord(norm, kw) || raw.includes(kw)
+    );
+    if (hitAnswer) {
+      return {
+        englishReply: `Bingo! It is a ${activeRiddle.answer}! You are so smart!`,
+        chineseHint: `太厉害啦，一猜就中！答案就是 ${activeRiddle.answer}（${activeRiddle.answerZh}）🎉 要不要再来猜一个？`,
+        emotion: "cheering",
+        praise: "猜谜小天才！",
+        completedGoalIds: [],
+        nextSuggestions: [
+          { en: "Give me another riddle!", zh: "再猜一个谜语！", icon: "🎲" },
+          { en: "Tell me a story!", zh: "听小故事！", icon: "📖" },
+        ],
+        masteredWords: [activeRiddle.answer],
+        isSceneComplete: false,
+      };
+    }
+
+    // Keep the riddle active on a wrong guess so the child can try again!
+    const clueBody = activeRiddle.promptEn.replace(/^Riddle time!\s*/i, "");
     return {
-      englishReply: "Riddle time! It is yellow and sweet. Monkeys love it! What fruit is it?",
-      chineseHint: "来猜猜看：它是黄色的，弯弯的甜甜的，小猴子最爱吃！是什么水果呀？",
+      englishReply: `Nice guess! Try this riddle again: ${clueBody}`,
+      chineseHint: `差点猜中啦，不是这个哦！再看一次提示猜猜看：${activeRiddle.promptZh}`,
+      emotion: "thinking",
+      praise: "勇敢猜猜看很棒！再试一次~",
+      completedGoalIds: [],
+      nextSuggestions: [
+        ...activeRiddle.chips,
+        { en: "Give me another riddle!", zh: "换一个谜语！", icon: "🎲" },
+      ],
+      masteredWords: [],
+      isSceneComplete: false,
+    };
+  }
+
+  // 2. Explicit activity intents (riddle / story / greeting) before general vocab fallback
+  if (wantsNewRiddle) {
+    const pastRiddles = history.filter(
+      (m) => m.role === "assistant" && m.englishText.toLowerCase().includes("riddle time!")
+    ).length;
+    const riddle = OFFLINE_RIDDLES[pastRiddles % OFFLINE_RIDDLES.length];
+    return {
+      englishReply: riddle.promptEn,
+      chineseHint: riddle.promptZh,
       emotion: "thinking",
       praise: "猜谜语开始咯！",
       completedGoalIds: [],
       nextSuggestions: [
-        { en: "It's a banana!", zh: "是香蕉 banana！", icon: "🍌" },
-        { en: "It's an apple!", zh: "是苹果 apple！", icon: "🍎" },
+        ...riddle.chips,
+        { en: "Give me another riddle!", zh: "换一个谜语！", icon: "🎲" },
       ],
       masteredWords: [],
       isSceneComplete: false,
@@ -221,19 +557,20 @@ export function runFallbackFreeTalkTurn(userText: string): TutorResponse {
     norm.includes("tell me more") ||
     raw.includes("故事")
   ) {
+    const pastStories = history.filter(
+      (m) =>
+        m.role === "assistant" &&
+        OFFLINE_STORIES.some((st) => m.englishText.includes(st.englishReply.slice(0, 24)))
+    ).length;
+    const story = OFFLINE_STORIES[pastStories % OFFLINE_STORIES.length];
     return {
-      englishReply:
-        "One sunny day, Dino meets a cute rabbit. They share a sweet cake and feel so happy!",
-      chineseHint:
-        "故事续集：晴朗的一天，Dino 遇见了一只可爱的小兔子，它们一起分享甜蛋糕，开心极啦！",
+      englishReply: story.englishReply,
+      chineseHint: story.chineseHint,
       emotion: "happy",
       praise: "爱听英文故事磨耳朵太棒了！",
       completedGoalIds: [],
-      nextSuggestions: [
-        { en: "Let's share!", zh: "我们一起分享！", icon: "🎂" },
-        { en: "I am happy!", zh: "我好开心！", icon: "😄" },
-      ],
-      masteredWords: ["sunny", "rabbit", "cake", "happy"],
+      nextSuggestions: story.chips,
+      masteredWords: story.masteredWords,
       isSceneComplete: false,
     };
   }

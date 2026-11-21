@@ -1,5 +1,6 @@
 export type TtsEngine = "edge" | "openai" | "browser";
 export type SttEngine = "browser" | "openai" | "minimax";
+export type VoiceProofPurpose = "feed" | "roleplay";
 
 export const MINIMAX_STT_DEFAULT_URL = "https://api.minimax.cn/v1/speech_to_text";
 export const MINIMAX_STT_DEFAULT_MODEL = "asr-1.0";
@@ -7,6 +8,16 @@ export const OPENAI_STT_DEFAULT_MODEL = "whisper-1";
 
 export function resolveSttBaseUrl(engine: string, baseUrl: string): string {
   return baseUrl.trim() || (engine === "minimax" ? MINIMAX_STT_DEFAULT_URL : "");
+}
+
+export function requiresSttApiKey(engine: string, baseUrl: string): boolean {
+  if (engine === "minimax") return true;
+  if (engine !== "openai") return false;
+  try {
+    return new URL(baseUrl).hostname.replace(/\.$/, "") === "api.openai.com";
+  } catch {
+    return false;
+  }
 }
 
 export interface SttEngineMeta {
@@ -46,10 +57,12 @@ export function resolveActiveSttMode(settings: {
   sttApiBaseUrl: string;
   hasSttApiKey: boolean;
 }): SttEngine {
-  if (settings.sttEngine === "minimax" && settings.hasSttApiKey) {
+  const { sttEngine, sttApiBaseUrl, hasSttApiKey } = settings;
+  if (!hasSttApiKey && requiresSttApiKey(sttEngine, sttApiBaseUrl)) return "browser";
+  if (sttEngine === "minimax") {
     return "minimax";
   }
-  if (settings.sttEngine === "openai" && settings.sttApiBaseUrl.trim()) {
+  if (sttEngine === "openai" && sttApiBaseUrl.trim()) {
     return "openai";
   }
   return "browser";

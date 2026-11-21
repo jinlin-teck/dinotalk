@@ -32,6 +32,7 @@ export function todayDateKey(date = new Date()): string {
 }
 
 function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
+  sqlite.pragma("busy_timeout = 5000");
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
 
@@ -47,6 +48,7 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
       pet_mood INTEGER NOT NULL DEFAULT 90,
       equipped_accessories_json TEXT NOT NULL DEFAULT '[]',
       owned_accessories_json TEXT NOT NULL DEFAULT '[]',
+      owned_skin_ids_json TEXT NOT NULL DEFAULT '[]',
       daily_goal_minutes INTEGER NOT NULL DEFAULT 15,
       eye_care_minutes INTEGER NOT NULL DEFAULT 15,
       streak_days INTEGER NOT NULL DEFAULT 1,
@@ -103,6 +105,7 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
       mastery_level INTEGER NOT NULL DEFAULT 0,
       correct_count INTEGER NOT NULL DEFAULT 0,
       wrong_count INTEGER NOT NULL DEFAULT 0,
+      review_miss_pending INTEGER NOT NULL DEFAULT 0,
       next_review_at TEXT NOT NULL,
       last_practiced_at TEXT NOT NULL
     );
@@ -110,6 +113,15 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
       ON word_mastery (profile_id, item_key);
     CREATE INDEX IF NOT EXISTS word_mastery_profile_review_idx
       ON word_mastery (profile_id, next_review_at);
+
+    CREATE TABLE IF NOT EXISTS voice_proofs (
+      token_hash TEXT PRIMARY KEY NOT NULL,
+      profile_id INTEGER NOT NULL,
+      purpose TEXT NOT NULL,
+      evidence TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS voice_proofs_expires_at_idx ON voice_proofs (expires_at);
 
     CREATE TABLE IF NOT EXISTS chat_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,6 +131,7 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
       completed_goals_json TEXT NOT NULL DEFAULT '[]',
       summary_zh TEXT NOT NULL DEFAULT '',
       stars_earned INTEGER NOT NULL DEFAULT 0,
+      has_voice_turn INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -154,6 +167,29 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
       sqlite.exec(
         "ALTER TABLE app_settings ADD COLUMN parent_session_version INTEGER NOT NULL DEFAULT 0"
       );
+    }
+    const sessionColumns = sqlite.pragma("table_info(chat_sessions)") as { name: string }[];
+    if (!sessionColumns.some((column) => column.name === "has_voice_turn")) {
+      sqlite.exec("ALTER TABLE chat_sessions ADD COLUMN has_voice_turn INTEGER NOT NULL DEFAULT 0");
+    }
+    const masteryColumns = sqlite.pragma("table_info(word_mastery)") as { name: string }[];
+    if (!masteryColumns.some((column) => column.name === "review_miss_pending")) {
+      sqlite.exec("ALTER TABLE word_mastery ADD COLUMN review_miss_pending INTEGER NOT NULL DEFAULT 0");
+    }
+    const profileColumns = sqlite.pragma("table_info(child_profiles)") as { name: string }[];
+    if (!profileColumns.some((column) => column.name === "owned_skin_ids_json")) {
+      sqlite.exec(`
+        ALTER TABLE child_profiles ADD COLUMN owned_skin_ids_json TEXT NOT NULL DEFAULT '[]';
+        UPDATE child_profiles
+        SET owned_skin_ids_json = (
+          SELECT json_group_array(substr(value, 6)) FROM json_each(owned_accessories_json)
+          WHERE type = 'text' AND value GLOB 'skin:*'
+        ), owned_accessories_json = (
+          SELECT json_group_array(value) FROM json_each(owned_accessories_json)
+          WHERE type = 'text' AND value NOT GLOB 'skin:*'
+        )
+        WHERE json_valid(owned_accessories_json);
+      `);
     }
   }).immediate();
 

@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { hasSceneKey, hasWordVisualKey } from "@/components/illustrations/visual-keys";
-import { CURRICULUM_LEVELS, L0_UNITS, getAllPhonics, getAllVocab } from "./index";
+import {
+  CURRICULUM_LEVELS,
+  DINO_SKINS,
+  L0_UNITS,
+  PET_ACCESSORIES,
+  getAllPhonics,
+  getAllSentences,
+  getAllVocab,
+  getUnitRewardAccessory,
+} from "./index";
 
 describe("L0-L2 Curriculum Integrity", () => {
   it("defines L0 active + L1/L2 upcoming roadmap", () => {
@@ -26,11 +35,14 @@ describe("L0-L2 Curriculum Integrity", () => {
     });
   });
 
-  it("covers all 26 A-Z letters across U1-U9 and CVC blending in U10", () => {
+  it("covers all 26 A-Z letters with lowercase pairing across U1-U9 and progressive CVC blending from U2-U10", () => {
     const letters = new Set<string>();
     for (const unit of L0_UNITS.slice(0, 9)) {
       for (const item of unit.phonics) {
-        letters.add(item.letter);
+        if (!item.isCvc) {
+          letters.add(item.letter);
+          expect(item.lowercase).toBe(item.letter.toLowerCase());
+        }
       }
     }
     expect(letters.size).toBe(26);
@@ -38,17 +50,37 @@ describe("L0-L2 Curriculum Integrity", () => {
       expect(letters.has(String.fromCharCode(code))).toBe(true);
     }
 
+    // Progressive CVC blending starts in U2 and culminates in U10
+    for (const unit of L0_UNITS.slice(1)) {
+      const cvcItems = unit.phonics.filter((p) => p.isCvc);
+      expect(cvcItems.length).toBeGreaterThanOrEqual(1);
+      for (const item of cvcItems) {
+        expect(item.blendParts).toHaveLength(3);
+        expect(item.blendParts?.join("")).toBe(item.sampleWords[0]?.word);
+      }
+    }
+
     const u10 = L0_UNITS[9];
     expect(u10.phonics.every((p) => p.isCvc)).toBe(true);
     expect(u10.phonics.length).toBeGreaterThanOrEqual(6);
   });
 
-  it("has globally unique vocab IDs and phonics IDs", () => {
+  it("has globally unique vocab, phonics, sentence IDs, unit reward accessories, and dino skins", () => {
     const vocab = getAllVocab();
     const phonics = getAllPhonics();
-    expect(vocab.length).toBeGreaterThanOrEqual(75);
+    const sentences = getAllSentences();
+    expect(vocab.length).toBeGreaterThanOrEqual(100);
+    expect(sentences.length).toBeGreaterThanOrEqual(30);
     expect(new Set(vocab.map((v) => v.id)).size).toBe(vocab.length);
     expect(new Set(phonics.map((p) => p.id)).size).toBe(phonics.length);
+    expect(new Set(sentences.map((s) => s.id)).size).toBe(sentences.length);
+
+    expect(new Set(PET_ACCESSORIES.map((a) => a.id)).size).toBe(PET_ACCESSORIES.length);
+    for (const unit of L0_UNITS) {
+      expect(getUnitRewardAccessory(unit.id)).toBeDefined();
+      expect(unit.parentTipZh).toBeTruthy();
+    }
+    expect(DINO_SKINS.some((s) => s.id === "dino-green" && s.costStars === 0)).toBe(true);
   });
 
   it("maps every vocab visualKey, phonics sample visualKey, and roleplay sceneKey to built-in artwork", () => {

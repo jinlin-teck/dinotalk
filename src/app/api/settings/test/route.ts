@@ -11,7 +11,7 @@ import {
   validateEndpointUrl,
 } from "@/lib/security/endpoint-guard";
 import { fetchProviderEndpoint } from "@/lib/security/provider-fetch";
-import { resolveSttBaseUrl } from "@/lib/speech/constants";
+import { requiresSttApiKey, resolveSttBaseUrl } from "@/lib/speech/constants";
 import { MINIMAX_STT_DEFAULT_MODEL, SttProviderError, transcribeWithMiniMax } from "@/lib/speech/stt";
 import { synthesizeSpeech } from "@/lib/speech/tts";
 import { createSilentWavBuffer } from "@/lib/speech/wav-encoder";
@@ -226,15 +226,15 @@ export async function POST(request: Request) {
     }
   }
 
-  if (sttEngine === "minimax") {
-    if (!key.trim()) {
-      return NextResponse.json({
-        ok: false,
-        latencyMs: Date.now() - started,
-        message: "请填写 MiniMax API Key",
-      });
-    }
+  if (!key.trim() && requiresSttApiKey(sttEngine, sttUrlCheck.normalized)) {
+    return NextResponse.json({
+      ok: false,
+      latencyMs: Date.now() - started,
+      message: sttEngine === "minimax" ? "请填写 MiniMax API Key" : "请填写 OpenAI API Key",
+    });
+  }
 
+  if (sttEngine === "minimax") {
     try {
       const wavBuffer = createSilentWavBuffer(400, 16000);
       const model =

@@ -3,22 +3,38 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, todayDateKey } from "@/db";
 import { wordMastery } from "@/db/schema";
-import { getAllPhonics, getAllVocab } from "@/data/curriculum";
+import { getAllPhonics, getAllSentences, getAllVocab, getUnitById } from "@/data/curriculum";
 import { isDueForReview, sortReviewQueue } from "@/lib/srs";
 import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
 import {
   addDailyLogStats,
   awardStarsAndMood,
   DEFAULT_PROFILE_ID,
-  isValidCurriculumItemKey,
+  unitHasCurriculumItem,
   upsertWordMasteryItem,
 } from "@/lib/services/learning-service";
-import type { EnrichedReviewItem } from "@/types/api";
+import type {
+  CurriculumItemType,
+  EnrichedReviewItem,
+  ReviewQuestionMode,
+} from "@/types/api";
 
 export type { EnrichedReviewItem };
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function resolveQuestionMode(
+  itemType: CurriculumItemType,
+  masteryLevel: number
+): ReviewQuestionMode {
+  if (itemType === "phonics") {
+    return masteryLevel >= 3 ? "blind_listen" : "listen_read";
+  }
+  if (masteryLevel >= 4) return "speak_card";
+  if (masteryLevel >= 2) return "blind_listen";
+  return "listen_read";
+}
 
 function pickTwoDistinct<T>(pool: T[]): T[] {
   if (pool.length <= 2) return pool.slice();
@@ -40,8 +56,10 @@ export async function GET() {
 
   const vocabList = getAllVocab();
   const phonicsList = getAllPhonics();
+  const sentenceList = getAllSentences();
   const vocabMap = new Map(vocabList.map((v) => [v.id, v]));
   const phonicsMap = new Map(phonicsList.map((p) => [p.id, p]));
+  const sentenceMap = new Map(sentenceList.map((s) => [s.id, s]));
 
   const dueRows = sortReviewQueue(allRows.filter((r) => isDueForReview(r.nextReviewAt, now)));
   const isWarmup = dueRows.length === 0;
@@ -68,6 +86,7 @@ export async function GET() {
           zh: v.zh,
           visualKey: v.visualKey,
           masteryLevel: 0,
+          questionMode: "listen_read",
           distractors: distractors.map((o) => ({
             text: o.word,
             zh: o.zh,
@@ -103,8 +122,34 @@ export async function GET() {
         zh: v.zh,
         visualKey: v.visualKey,
         masteryLevel: row.masteryLevel,
+        questionMode: resolveQuestionMode("word", row.masteryLevel),
         distractors: distractors.map((o) => ({
           text: o.word,
+          zh: o.zh,
+          visualKey: o.visualKey,
+        })),
+      });
+    } else if (row.itemType === "sentence") {
+      const s = sentenceMap.get(row.itemKey);
+      if (!s) continue;
+      const pool = sentenceList.filter(
+        (o) => o.id !== s.id && o.en.toLowerCase() !== s.en.toLowerCase()
+      );
+      const distractors = pickTwoDistinct(pool);
+      enriched.push({
+        itemKey: row.itemKey,
+        itemType: "sentence",
+        unitId: s.unitId,
+        unitTitleZh: s.unitTitleZh,
+        displayText: s.en,
+        audioText: s.en,
+        subText: "核心句型",
+        zh: s.zh,
+        visualKey: s.visualKey,
+        masteryLevel: row.masteryLevel,
+        questionMode: resolveQuestionMode("sentence", row.masteryLevel),
+        distractors: distractors.map((o) => ({
+          text: o.en,
           zh: o.zh,
           visualKey: o.visualKey,
         })),
@@ -122,16 +167,17 @@ export async function GET() {
         itemType: "phonics",
         unitId: p.unitId,
         unitTitleZh: p.unitTitleZh,
-        displayText: p.letter,
+        displayText: p.lowercase ? `${p.letter} ${p.lowercase}` : p.letter,
         audioText: sample?.word ?? p.letter,
         subText: p.soundLabel,
         zh: `${p.soundLabel} · ${sample?.zh ?? p.letter}`,
         visualKey: sample?.visualKey || "star",
         masteryLevel: row.masteryLevel,
+        questionMode: resolveQuestionMode("phonics", row.masteryLevel),
         distractors: distractors.map((o) => {
           const oSample = o.sampleWords[0];
           return {
-            text: o.letter,
+            text: o.lowercase ? `${o.letter} ${o.lowercase}` : o.letter,
             zh: `${o.soundLabel} · ${oSample?.zh ?? o.letter}`,
             visualKey: oSample?.visualKey || "star",
           };
@@ -149,7 +195,7 @@ export async function GET() {
 
 const SubmitReviewSchema = z.object({
   itemKey: z.string().min(1),
-  itemType: z.enum(["word", "phonics"]),
+  itemType: z.enum(["word", "phonics", "sentence"]),
   unitId: z.string().min(1),
   correct: z.boolean(),
 });
@@ -165,7 +211,8 @@ export async function POST(request: Request) {
   }
 
   const { itemKey, itemType, unitId, correct } = parsed.data;
-  if (!isValidCurriculumItemKey(itemKey, itemType)) {
+  const unit = getUnitById(unitId);
+  if (!unit || !unitHasCurriculumItem(unit, itemKey, itemType)) {
     return NextResponse.json({ error: "复习词条不存在于课程中" }, { status: 400 });
   }
 
@@ -174,27 +221,34 @@ export async function POST(request: Request) {
   const nowIso = now.toISOString();
   const today = todayDateKey(now);
 
-  const existingRow = db
-    .select({ nextReviewAt: wordMastery.nextReviewAt })
-    .from(wordMastery)
-    .where(
-      and(
-        eq(wordMastery.profileId, DEFAULT_PROFILE_ID),
-        eq(wordMastery.itemKey, itemKey)
+  const outcome = db.transaction((tx) => {
+    const existingRow = tx
+      .select({
+        nextReviewAt: wordMastery.nextReviewAt,
+        masteryLevel: wordMastery.masteryLevel,
+        reviewMissPending: wordMastery.reviewMissPending,
+      })
+      .from(wordMastery)
+      .where(
+        and(
+          eq(wordMastery.profileId, DEFAULT_PROFILE_ID),
+          eq(wordMastery.itemKey, itemKey)
+        )
       )
-    )
-    .get();
+      .get();
+    const isDue = isDueForReview(existingRow?.nextReviewAt, now);
+    if (!correct && existingRow && (!isDue || existingRow.reviewMissPending)) {
+      return { ...existingRow, starsAwarded: 0 };
+    }
 
-  // 只有真正到期（或首次接触）的复习才奖励星星，避免重复提交刷星。
-  const starsAwarded = correct && isDueForReview(existingRow?.nextReviewAt, now) ? 1 : 0;
-
-  const srs = db.transaction((tx) => {
+    const starsAwarded = correct && isDue ? 1 : 0;
     const nextSrs = upsertWordMasteryItem(tx, {
       itemKey,
       itemType,
       unitId,
       correct,
       now,
+      reviewMissPending: !correct,
     });
 
     if (starsAwarded > 0) {
@@ -209,13 +263,13 @@ export async function POST(request: Request) {
       studySeconds: 15,
     });
 
-    return nextSrs;
-  });
+    return { ...nextSrs, starsAwarded };
+  }, { behavior: "immediate" });
 
   return NextResponse.json({
     ok: true,
-    masteryLevel: srs.masteryLevel,
-    nextReviewAt: srs.nextReviewAt,
-    starsAwarded,
+    masteryLevel: outcome.masteryLevel,
+    nextReviewAt: outcome.nextReviewAt,
+    starsAwarded: outcome.starsAwarded,
   });
 }

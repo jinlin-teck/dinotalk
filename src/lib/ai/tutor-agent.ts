@@ -10,6 +10,7 @@ import {
   type ProviderErrorCode,
 } from "./provider";
 import { runFallbackFreeTalkTurn, runFallbackRoleplayTurn, type TutorResponse } from "./fallback-agent";
+import { stripMarkdownFormatting } from "@/lib/speech/text-sanitizer";
 
 const SuggestionSchema = z.object({
   en: z.string().min(1).max(80),
@@ -85,19 +86,24 @@ export function parseAgentJson(
 
   const suggestions =
     validated.nextSuggestions.length > 0
-      ? validated.nextSuggestions.slice(0, 3)
+      ? validated.nextSuggestions.slice(0, 3).map((s) => ({
+          ...s,
+          en: stripMarkdownFormatting(s.en) || s.en.trim(),
+          zh: stripMarkdownFormatting(s.zh) || s.zh.trim(),
+        }))
       : fallbackSuggestions;
 
   const allowedWords = new Set(unit ? unit.vocab.map((v) => v.word.toLowerCase()) : []);
   const mastered = validated.masteredWords
-    .map((w) => w.trim().toLowerCase())
+    .map((w) => stripMarkdownFormatting(w).toLowerCase())
     .filter((w) => (allowedWords.size === 0 ? w.length > 0 : allowedWords.has(w)));
 
   return {
-    englishReply: validated.englishReply.trim(),
-    chineseHint: validated.chineseHint.trim() || "太棒了！点一下提示气泡试试下一句吧~",
+    englishReply: stripMarkdownFormatting(validated.englishReply) || validated.englishReply.trim(),
+    chineseHint:
+      stripMarkdownFormatting(validated.chineseHint) || "太棒了！点一下提示气泡试试下一句吧~",
     emotion: validated.emotion as EmotionMood,
-    praise: validated.praise.trim() || "勇敢开口最棒啦！",
+    praise: stripMarkdownFormatting(validated.praise) || "勇敢开口最棒啦！",
     completedGoalIds: finalGoalIds,
     nextSuggestions: suggestions,
     masteredWords: Array.from(new Set(mastered)),
@@ -125,7 +131,8 @@ function buildRoleplaySystemPrompt(
 1. 孩子英语几乎零基础！你的 englishReply 必须非常简短简单（3~10 个英文单词，1~2 个短句，优先使用本单元词汇），不要用长难句或复杂语法。
 2. 即使孩子发音识别有点误差或中英夹杂，也要先热情表扬（praise），再用正确简单的英语自然回应并示范。
 3. 严格保持儿童安全内容，绝不输出暴力、恐怖、成人、说教或负面批评内容。
-4. 必须严格返回单个合法 JSON 对象，不要有任何 JSON 之外的解释或 Markdown：
+4. 所有文本字段必须使用纯文本，严禁使用任何 Markdown 语法（如 **加粗**、*斜体*、反引号或列表符号），以免影响语音朗读。
+5. 必须严格返回单个合法 JSON 对象，不要有任何 JSON 之外的解释或 Markdown：
 {
   "englishReply": "简短温暖的英文回复(3-10词)",
   "chineseHint": "贴心的简体中文提示，引导孩子完成下一个未完成目标",
@@ -165,7 +172,7 @@ export async function runRoleplayTurn(params: {
 
   if (!isLlmConfigured(config)) {
     return {
-      response: runFallbackRoleplayTurn(unit, userText, completedGoalIds),
+      response: runFallbackRoleplayTurn(unit, userText, completedGoalIds, childNickname),
       usedFallback: true,
       fallbackReason: "not_configured",
     };
@@ -199,7 +206,7 @@ export async function runRoleplayTurn(params: {
     };
   } catch (err) {
     return {
-      response: runFallbackRoleplayTurn(unit, userText, completedGoalIds),
+      response: runFallbackRoleplayTurn(unit, userText, completedGoalIds, childNickname),
       usedFallback: true,
       fallbackReason: err instanceof LlmProviderError ? err.code : "invalid_response",
     };
@@ -217,7 +224,7 @@ export async function runFreeTalkTurn(params: {
 
   if (!isLlmConfigured(config)) {
     return {
-      response: runFallbackFreeTalkTurn(userText),
+      response: runFallbackFreeTalkTurn(userText, history),
       usedFallback: true,
       fallbackReason: "not_configured",
     };
@@ -228,7 +235,8 @@ export async function runFreeTalkTurn(params: {
 1. 孩子可能会用中文问“XX用英语怎么说”，或者说简单的英文单词/短句。
 2. 你的 englishReply 要超级简单（3~12 个英文词），chineseHint 用温暖童趣的中文解释清楚并给出跟读鼓励。
 3. 严禁出现不适龄或负面内容。
-4. 严格只返回 JSON 对象：
+4. 所有字段只输出纯文本，严禁在 englishReply、chineseHint、praise 或 nextSuggestions 中使用 Markdown 语法（如 **加粗**、*斜体*、反引号等），以免语音播报读出星号。
+5. 严格只返回 JSON 对象：
 {
   "englishReply": "简短英文回应",
   "chineseHint": "温柔中文解释或趣味互动",
@@ -264,7 +272,7 @@ export async function runFreeTalkTurn(params: {
     };
   } catch (err) {
     return {
-      response: runFallbackFreeTalkTurn(userText),
+      response: runFallbackFreeTalkTurn(userText, history),
       usedFallback: true,
       fallbackReason: err instanceof LlmProviderError ? err.code : "invalid_response",
     };

@@ -34,6 +34,22 @@ describe("PronunciationScorer for 7yo beginners", () => {
     expect(sentenceRes.stars).toBeGreaterThanOrEqual(2);
   });
 
+  it("normalizes Arabic numerals (0-20) and forgives common child ASR homophones", () => {
+    expect(normalizeSpeechText("I am 7!")).toBe("i am seven");
+    expect(scorePronunciation("7", "seven")).toMatchObject({
+      score: 100,
+      stars: 3,
+      passed: true,
+    });
+    expect(scorePronunciation("10", "ten")).toMatchObject({
+      score: 100,
+      stars: 3,
+      passed: true,
+    });
+    expect(scorePronunciation("tree", "three").passed).toBe(true);
+    expect(scorePronunciation("know", "no").passed).toBe(true);
+  });
+
   it("does not give full score on substring containment, empty targets, or distinct CVC words", () => {
     const breadVsRed = scorePronunciation("bread", "red");
     expect(breadVsRed.score).toBeLessThan(100);

@@ -1,11 +1,14 @@
 import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
+import { z } from "zod";
 import { getDb } from "@/db";
 import { appSettings } from "@/db/schema";
 import { assertSameOrigin } from "@/lib/security/endpoint-guard";
 import { consumeRateLimit, getRequestSourceKey } from "@/lib/security/rate-limit";
 import { resolveActiveSttMode } from "@/lib/speech/constants";
 import { transcribeWithMiniMax, transcribeWithOpenAi } from "@/lib/speech/stt";
+import { issueVoiceProof } from "@/lib/speech/voice-proof";
+import { DEFAULT_PROFILE_ID } from "@/lib/services/learning-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,6 +17,7 @@ const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // 10 MB
 const MAX_FORM_BYTES = MAX_AUDIO_BYTES + 64 * 1024; // multipart headers and hints
 const RATE_LIMIT_MAX = 40;
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+const VoiceProofPurposeSchema = z.enum(["feed", "roleplay"]);
 
 function oversizedAudioResponse() {
   return NextResponse.json(
@@ -79,6 +83,9 @@ export async function POST(request: Request) {
 
   const audio = form.get("audio");
   const hints = typeof form.get("hints") === "string" ? (form.get("hints") as string) : "";
+  const rawLang = typeof form.get("language") === "string" ? (form.get("language") as string).trim().toLowerCase() : "";
+  const language: "en" | "zh" = rawLang === "zh" || rawLang === "zh-cn" ? "zh" : "en";
+  const purpose = VoiceProofPurposeSchema.safeParse(form.get("voiceProofPurpose") ?? undefined);
 
   if (!(audio instanceof Blob) || audio.size < 16) {
     return NextResponse.json({ ok: false, error: "录音太短，请再试一次哦" }, { status: 400 });
@@ -105,7 +112,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: false,
       code: "stt_not_configured",
-      error: "未配置云端语音识别，已使用浏览器原生语音识别",
+      error: "语音设置有变化，请再录一次试试哦！",
       text: "",
     });
   }
@@ -121,6 +128,7 @@ export async function POST(request: Request) {
             apiKey: settings.sttApiKey,
             model: settings.sttApiModel,
             hints,
+            language,
           })
         : await transcribeWithOpenAi({
             audioBlob: audio,
@@ -129,8 +137,12 @@ export async function POST(request: Request) {
             apiKey: settings.sttApiKey,
             model: settings.sttApiModel,
             hints,
+            language,
           });
-    return NextResponse.json({ ok: true, text });
+    const voiceProof = text.trim() && purpose.success
+      ? issueVoiceProof(text, DEFAULT_PROFILE_ID, purpose.data)
+      : undefined;
+    return NextResponse.json({ ok: true, text, voiceProof });
   } catch {
     return NextResponse.json({
       ok: false,

@@ -6,6 +6,7 @@ import { getAudioCacheDir } from "@/db";
 import { normalizeBaseUrl } from "@/lib/ai/provider";
 import { getUrlOrigin } from "@/lib/security/endpoint-guard";
 import { fetchProviderEndpoint } from "@/lib/security/provider-fetch";
+import { sanitizeTextForTts } from "./text-sanitizer";
 
 export interface TtsParams {
   text: string;
@@ -197,7 +198,7 @@ async function pruneAudioCacheIfNeeded(cacheDir: string): Promise<void> {
 }
 
 export async function synthesizeSpeech(params: TtsParams): Promise<TtsResult> {
-  const cleanText = params.text.trim().slice(0, 400);
+  const cleanText = sanitizeTextForTts(params.text).slice(0, 400);
   if (!cleanText) {
     return { mode: "browser", reason: "empty_text" };
   }

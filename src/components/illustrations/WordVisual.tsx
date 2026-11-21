@@ -17,6 +17,7 @@ export function WordVisual({ visualKey, size = "lg" }: WordVisualProps) {
 
   if (COLOR_HEX_MAP[visualKey]) {
     const hex = COLOR_HEX_MAP[visualKey];
+    const isLight = visualKey === "color-white";
     return (
       <div
         className={`${boxCls} inline-flex items-center justify-center bg-white border-2 border-slate-200 shadow-sm`}
@@ -26,8 +27,10 @@ export function WordVisual({ visualKey, size = "lg" }: WordVisualProps) {
           <path
             d="M32 6 C46 6 56 18 54 32 C52 46 42 56 28 56 C14 56 8 44 10 30 C12 16 20 6 32 6 Z"
             fill={hex}
+            stroke={isLight ? "#CBD5E1" : "none"}
+            strokeWidth={isLight ? 3 : 0}
           />
-          <circle cx="24" cy="22" r="5" fill="#FFFFFF" opacity="0.45" />
+          <circle cx="24" cy="22" r="5" fill={isLight ? "#E2E8F0" : "#FFFFFF"} opacity="0.55" />
         </svg>
       </div>
     );

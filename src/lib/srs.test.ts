@@ -3,6 +3,7 @@ import {
   SRS_INTERVAL_DAYS,
   calculateNextReview,
   isDueForReview,
+  isMasteryItemWeak,
   sortReviewQueue,
 } from "./srs";
 
@@ -47,5 +48,21 @@ describe("SRS spaced repetition scheduler", () => {
       { id: "a", masteryLevel: 1, nextReviewAt: "2026-11-18T00:00:00.000Z" },
     ]);
     expect(sorted.map((x) => x.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("graduates items with a past mistake out of weak status once masteryLevel >= 3 and not due", () => {
+    const future = "2026-11-27T08:00:00.000Z";
+    const past = "2026-11-19T08:00:00.000Z";
+
+    // Low mastery or wrong at Lv.2 is weak
+    expect(isMasteryItemWeak({ masteryLevel: 1, wrongCount: 0, nextReviewAt: future }, fixedNow)).toBe(true);
+    expect(isMasteryItemWeak({ masteryLevel: 2, wrongCount: 1, nextReviewAt: future }, fixedNow)).toBe(true);
+
+    // Mastered to Lv.3..5 and not due is no longer weak even if wrongCount > 0 historically
+    expect(isMasteryItemWeak({ masteryLevel: 3, wrongCount: 1, nextReviewAt: future }, fixedNow)).toBe(false);
+    expect(isMasteryItemWeak({ masteryLevel: 5, wrongCount: 2, nextReviewAt: future }, fixedNow)).toBe(false);
+
+    // Due items still need attention
+    expect(isMasteryItemWeak({ masteryLevel: 4, wrongCount: 0, nextReviewAt: past }, fixedNow)).toBe(true);
   });
 });

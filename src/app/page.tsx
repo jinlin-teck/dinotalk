@@ -2,11 +2,16 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Compass, Gift, Lock, Play, Sparkles, Star } from "lucide-react";
+import { Award, Compass, Gift, Lock, Play, Sparkles, Star } from "lucide-react";
 import { AppShell, type ProfileSummary } from "@/components/AppShell";
 import { DinoCharacter } from "@/components/illustrations/DinoCharacter";
-import { CURRICULUM_LEVELS, L0_UNITS } from "@/data/curriculum";
+import {
+  CURRICULUM_LEVELS,
+  getUnitRewardAccessory,
+  L0_UNITS,
+} from "@/data/curriculum";
 import { soundEffects } from "@/lib/sound-effects";
+import type { TodayLogSummary } from "@/types/api";
 
 interface UnitProgressRow {
   unitId: string;
@@ -17,8 +22,16 @@ interface UnitProgressRow {
   starsEarned: number;
 }
 
+interface HomeProfile extends ProfileSummary {
+  avatarId?: string;
+  dailyGoalMinutes?: number;
+  equippedAccessories?: string[];
+  ownedAccessories?: string[];
+}
+
 export default function AdventureMapPage() {
-  const [profile, setProfile] = useState<(ProfileSummary & { equippedAccessories?: string[] }) | null>(null);
+  const [profile, setProfile] = useState<HomeProfile | null>(null);
+  const [todayLog, setTodayLog] = useState<TodayLogSummary | null>(null);
   const [dueReviewCount, setDueReviewCount] = useState(0);
   const [progressList, setProgressList] = useState<UnitProgressRow[]>([]);
 
@@ -28,6 +41,7 @@ export default function AdventureMapPage() {
       .then((data) => {
         if (!data) return;
         setProfile(data.profile);
+        setTodayLog(data.todayLog ?? null);
         setDueReviewCount(data.dueReviewCount ?? 0);
         setProgressList(data.unitProgress ?? []);
       })
@@ -36,10 +50,16 @@ export default function AdventureMapPage() {
 
   const progressMap = new Map(progressList.map((p) => [p.unitId, p]));
   const totalUnitStars = progressList.reduce((sum, p) => sum + (p.starsEarned ?? 0), 0);
+  const ownedSet = new Set(profile?.ownedAccessories ?? []);
 
   // Recommend first unit that doesn't have all 4 stars yet
   const recommendedUnit =
     L0_UNITS.find((u) => (progressMap.get(u.id)?.starsEarned ?? 0) < 4) ?? L0_UNITS[0];
+
+  const dailyGoalMin = profile?.dailyGoalMinutes ?? 15;
+  const todayMin = Math.round(((todayLog?.studySeconds ?? 0) / 60) * 10) / 10;
+  const dailyPct = Math.min(100, Math.round((todayMin / Math.max(1, dailyGoalMin)) * 100));
+  const dailyGoalReached = todayMin >= dailyGoalMin;
 
   return (
     <AppShell profile={profile} dueReviewCount={dueReviewCount}>
@@ -47,7 +67,7 @@ export default function AdventureMapPage() {
         {/* Hero Welcome Banner */}
         <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-emerald-500 via-emerald-500 to-teal-500 text-white p-5 sm:p-7 shadow-lg border-b-4 border-emerald-700">
           <div className="flex flex-col md:flex-row items-center justify-between gap-5">
-            <div className="space-y-3 text-center md:text-left max-w-xl">
+            <div className="space-y-3 text-center md:text-left max-w-xl w-full">
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/20 text-xs font-extrabold backdrop-blur-xs">
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>小学二年级 · 零基础英语启蒙冒险岛</span>
@@ -56,8 +76,31 @@ export default function AdventureMapPage() {
                 {profile ? `${profile.nickname}，欢迎来到恐龙英语岛！` : "欢迎来到恐龙英语岛！"}
               </h1>
               <p className="text-emerald-50 text-sm sm:text-base font-medium leading-relaxed">
-                每天 10 分钟：先点读绘本，再学自然拼读、玩小游戏，最后和 {profile?.companionName ?? "Dino"} 演一场情景英文小剧场！
+                每天 {dailyGoalMin} 分钟：先点读绘本，再学自然拼读与 CVC 拼读、玩闯关小游戏，最后和{" "}
+                {profile?.companionName ?? "Dino"} 演一场情景英文小剧场！
               </p>
+
+              {/* Daily Goal Energy Bar */}
+              <div className="rounded-2xl bg-white/15 backdrop-blur-xs p-3 space-y-1.5 text-left">
+                <div className="flex items-center justify-between text-xs font-extrabold">
+                  <span className="flex items-center gap-1">
+                    <Award className="w-4 h-4 text-amber-300" />
+                    <span>今日冒险能量</span>
+                  </span>
+                  <span>
+                    {todayMin.toFixed(1)} / {dailyGoalMin} 分钟
+                    {dailyGoalReached ? " 🏅 今日达标！" : ""}
+                  </span>
+                </div>
+                <div className="h-2.5 rounded-full bg-black/20 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${
+                      dailyGoalReached ? "bg-amber-300" : "bg-amber-400"
+                    }`}
+                    style={{ width: `${Math.max(4, dailyPct)}%` }}
+                  />
+                </div>
+              </div>
 
               <div className="flex flex-wrap items-center justify-center md:justify-start gap-3 pt-1">
                 <Link
@@ -83,7 +126,8 @@ export default function AdventureMapPage() {
 
             <div className="shrink-0 flex flex-col items-center">
               <DinoCharacter
-                mood="happy"
+                mood={dailyGoalReached ? "cheering" : "happy"}
+                avatarId={profile?.avatarId}
                 equippedAccessories={profile?.equippedAccessories ?? []}
                 size={150}
               />
@@ -94,7 +138,7 @@ export default function AdventureMapPage() {
           </div>
         </section>
 
-        {/* L0 Active Island Map */}
+        {/* L0 Active Island Trail Map */}
         <section className="space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
@@ -103,17 +147,19 @@ export default function AdventureMapPage() {
                 <span>L0 启蒙岛 · 10 大生活情景关卡</span>
               </h2>
               <p className="text-sm text-slate-500 font-medium">
-                覆盖 80+ 高频生活词 + 26 字母自然拼读与 CVC 拼读，点击任意小岛立刻开始！
+                覆盖 100+ 高频生活词 + 26 字母大小写与渐进 CVC 拼读，满 4 星解锁专属恐龙装扮！
               </p>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-4">
+          <div className="relative grid grid-cols-1 sm:grid-cols-2 gap-4">
             {L0_UNITS.map((unit) => {
               const prog = progressMap.get(unit.id);
               const stars = prog?.starsEarned ?? 0;
               const isRecommended = unit.id === recommendedUnit.id;
               const isAllDone = stars >= 4;
+              const rewardAcc = getUnitRewardAccessory(unit.id);
+              const rewardUnlocked = rewardAcc ? ownedSet.has(rewardAcc.id) : false;
 
               return (
                 <Link
@@ -131,13 +177,21 @@ export default function AdventureMapPage() {
                 >
                   {/* Island Number & Emoji */}
                   <div
-                    className="w-16 h-16 sm:w-20 sm:h-20 rounded-3xl flex flex-col items-center justify-center shrink-0 text-white shadow-sm border-b-4 border-black/15 group-hover:scale-105 transition"
+                    className="relative w-16 h-16 sm:w-20 sm:h-20 rounded-3xl flex flex-col items-center justify-center shrink-0 text-white shadow-sm border-b-4 border-black/15 group-hover:scale-105 transition"
                     style={{ backgroundColor: unit.themeColor }}
                   >
                     <span className="text-2xl sm:text-3xl leading-none">{unit.badgeEmoji}</span>
                     <span className="text-[11px] font-black mt-1 bg-black/20 px-2 rounded-full">
                       U{unit.order}
                     </span>
+                    {isRecommended && (
+                      <span
+                        title="Dino 在这一关等你哦"
+                        className="absolute -top-2.5 -right-2.5 w-7 h-7 rounded-full bg-amber-400 border-2 border-white shadow-xs flex items-center justify-center text-sm"
+                      >
+                        🦕
+                      </span>
+                    )}
                   </div>
 
                   {/* Info */}
@@ -156,6 +210,26 @@ export default function AdventureMapPage() {
                       {unit.titleEn} · 拼读：{unit.phonicsLabel}
                     </div>
                     <p className="text-xs text-slate-600 line-clamp-1">{unit.subtitleZh}</p>
+
+                    {/* Exclusive Reward Tag */}
+                    {rewardAcc && (
+                      <div className="pt-0.5">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                            rewardUnlocked
+                              ? "bg-amber-100 text-amber-800"
+                              : "bg-slate-100 text-slate-500"
+                          }`}
+                        >
+                          <span>{rewardAcc.emoji}</span>
+                          <span>
+                            {rewardUnlocked
+                              ? `已解锁：${rewardAcc.nameZh}`
+                              : `满4星赠：${rewardAcc.nameZh}`}
+                          </span>
+                        </span>
+                      </div>
+                    )}
 
                     {/* 4-Step Stars */}
                     <div className="flex items-center justify-between pt-1">

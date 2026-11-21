@@ -13,6 +13,7 @@ export interface SerializedProfile {
   ownedAccessoriesJson: string;
   equippedAccessories: string[];
   ownedAccessories: string[];
+  ownedSkinIds: string[];
   dailyGoalMinutes: number;
   eyeCareMinutes: number;
   streakDays: number;
@@ -60,6 +61,23 @@ export interface SanitizedSettings {
   updatedAt: string;
 }
 
+export type CurriculumItemType = "word" | "phonics" | "sentence";
+export type ReviewQuestionMode = "listen_read" | "blind_listen" | "speak_card";
+
+export interface UnlockedAccessoryNotice {
+  id: string;
+  nameZh: string;
+  emoji: string;
+  descZh: string;
+}
+
+export interface TodayLogSummary {
+  dateKey: string;
+  studySeconds: number;
+  activitiesCompleted: number;
+  wordsPracticed: number;
+}
+
 export interface ReportData {
   profile: {
     nickname: string;
@@ -97,6 +115,16 @@ export interface ReportData {
     masteryLevel: number;
     correctCount: number;
     wrongCount: number;
+    isDue?: boolean;
+    needsAttention?: boolean;
+  }>;
+  parentTips?: Array<{
+    unitId: string;
+    unitTitleZh: string;
+    badgeEmoji: string;
+    tipZh: string;
+    sampleEn: string;
+    sampleZh: string;
   }>;
   recentSessions: Array<{
     id: number;
@@ -116,7 +144,7 @@ export interface ReportData {
 
 export interface EnrichedReviewItem {
   itemKey: string;
-  itemType: "word" | "phonics";
+  itemType: CurriculumItemType;
   unitId: string;
   unitTitleZh: string;
   displayText: string;
@@ -125,5 +153,6 @@ export interface EnrichedReviewItem {
   zh: string;
   visualKey: string;
   masteryLevel: number;
+  questionMode?: ReviewQuestionMode;
   distractors: Array<{ text: string; zh: string; visualKey: string }>;
 }

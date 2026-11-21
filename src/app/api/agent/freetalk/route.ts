@@ -3,6 +3,7 @@ import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, todayDateKey } from "@/db";
 import { appSettings, chatMessages, chatSessions, childProfiles } from "@/db/schema";
+import { FREETALK_TOPICS } from "@/data/curriculum";
 import { runFreeTalkTurn } from "@/lib/ai/tutor-agent";
 import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
 import { addDailyLogStats, DEFAULT_PROFILE_ID } from "@/lib/services/learning-service";
@@ -37,6 +38,10 @@ export async function POST(request: Request) {
   let sessionId = parsed.data.sessionId;
   let historyRows: Array<{ role: "assistant" | "user"; englishText: string }> = [];
 
+  const activeTopic = parsed.data.topicId
+    ? FREETALK_TOPICS.find((t) => t.id === parsed.data.topicId)
+    : undefined;
+
   if (sessionId) {
     const existing = db.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).get();
     if (existing) {
@@ -56,6 +61,8 @@ export async function POST(request: Request) {
     } else {
       sessionId = undefined;
     }
+  } else if (activeTopic) {
+    historyRows = [{ role: "assistant", englishText: activeTopic.starterPromptEn }];
   }
 
   const result = await runFreeTalkTurn({
@@ -93,6 +100,19 @@ export async function POST(request: Request) {
         })
         .run();
       targetSessionId = Number(res.lastInsertRowid);
+      if (activeTopic) {
+        tx.insert(chatMessages)
+          .values({
+            sessionId: targetSessionId,
+            role: "assistant",
+            englishText: activeTopic.starterPromptEn,
+            chineseText: activeTopic.starterZh,
+            emotion: "happy",
+            suggestionsJson: JSON.stringify(activeTopic.quickChips),
+            createdAt: nowIso,
+          })
+          .run();
+      }
     }
 
     tx.insert(chatMessages)

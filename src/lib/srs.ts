@@ -42,6 +42,25 @@ export function isDueForReview(
   return ts <= now.getTime();
 }
 
+/**
+ * Determines whether a learned item currently needs focused reinforcement.
+ * Items that were missed once in the past graduate out of weak status once
+ * the child builds masteryLevel >= 3 and the item is not due for review.
+ */
+export function isMasteryItemWeak(
+  item: {
+    masteryLevel: number;
+    wrongCount: number;
+    nextReviewAt?: string | null;
+  },
+  now: Date = new Date()
+): boolean {
+  if (item.masteryLevel <= 1) return true;
+  if (item.nextReviewAt && isDueForReview(item.nextReviewAt, now)) return true;
+  if (item.masteryLevel <= 2 && item.wrongCount > 0) return true;
+  return false;
+}
+
 export function sortReviewQueue<
   T extends { nextReviewAt: string | null; masteryLevel: number }
 >(items: T[]): T[] {

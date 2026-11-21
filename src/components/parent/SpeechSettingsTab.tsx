@@ -6,6 +6,7 @@ import {
   MINIMAX_STT_DEFAULT_MODEL,
   MINIMAX_STT_DEFAULT_URL,
   OPENAI_STT_DEFAULT_MODEL,
+  requiresSttApiKey,
   STT_ENGINE_META,
 } from "@/lib/speech/constants";
 import type { SanitizedSettings } from "@/types/api";
@@ -161,6 +162,25 @@ export function SpeechSettingsTab({
         </div>
       </div>
 
+      <label className="flex items-center justify-between gap-4 p-4 rounded-2xl bg-emerald-50/70 border border-emerald-200 cursor-pointer">
+        <div>
+          <div className="text-sm font-black text-slate-900">
+            AI 剧场与自由聊天自动朗读中文引导提示
+          </div>
+          <div className="text-xs text-slate-600 mt-0.5">
+            开启后，Dino 会先读完英文回复，再温柔朗读中文提示，帮助识字量还在积累中的 7 岁零基础孩子纯靠听觉顺畅互动。
+          </div>
+        </div>
+        <input
+          type="checkbox"
+          checked={settings.ttsAutoPlayZh}
+          onChange={(e) =>
+            onChangeSettings({ ...settings, ttsAutoPlayZh: e.target.checked })
+          }
+          className="w-5 h-5 accent-emerald-600 shrink-0"
+        />
+      </label>
+
       {settings.ttsEngine === "openai" && (
         <div className="space-y-2 p-4 rounded-2xl bg-slate-50 border border-slate-200">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -258,7 +278,9 @@ export function SpeechSettingsTab({
                     ? `已保存：${settings.sttApiKeyMasked}`
                     : settings.sttEngine === "minimax"
                     ? "MiniMax API Key"
-                    : "STT API Key"
+                    : requiresSttApiKey(settings.sttEngine, settings.sttApiBaseUrl)
+                    ? "OpenAI API Key（必填）"
+                    : "STT API Key（按服务要求填写）"
                 }
                 className="h-10 rounded-xl border border-slate-300 px-3 text-sm bg-white"
               />

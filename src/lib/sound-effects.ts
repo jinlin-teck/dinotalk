@@ -79,6 +79,25 @@ class SoundEffectsManager {
       this.playTone(n, 0.22, "triangle", 0.13, idx * 0.09);
     });
   }
+
+  playPop() {
+    this.playTone(420, 0.05, "sine", 0.12, 0);
+    this.playTone(860, 0.09, "triangle", 0.13, 0.04);
+  }
+
+  playCombo(streak: number) {
+    const base = 523.25 * Math.pow(1.06, Math.min(8, Math.max(0, streak - 1)));
+    this.playTone(base, 0.12, "triangle", 0.12, 0);
+    this.playTone(base * 1.25, 0.16, "triangle", 0.13, 0.07);
+    this.playTone(base * 1.5, 0.22, "sine", 0.14, 0.14);
+  }
+
+  playUnlock() {
+    const notes = [587.33, 739.99, 880, 1174.66, 1479.98];
+    notes.forEach((n, idx) => {
+      this.playTone(n, 0.24, "triangle", 0.13, idx * 0.08);
+    });
+  }
 }
 
 export const soundEffects = new SoundEffectsManager();

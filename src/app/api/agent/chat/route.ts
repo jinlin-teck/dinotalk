@@ -12,13 +12,17 @@ import {
 import { getUnitById } from "@/data/curriculum";
 import { runRoleplayTurn } from "@/lib/ai/tutor-agent";
 import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
+import { resolveActiveSttMode } from "@/lib/speech/constants";
+import { consumeVoiceProof } from "@/lib/speech/voice-proof";
 import {
   addDailyLogStats,
   awardStarsAndMood,
   DEFAULT_PROFILE_ID,
   parseJsonStringArray,
+  unlockUnitAccessoryIfCompleted,
   upsertWordMasteryItem,
 } from "@/lib/services/learning-service";
+import type { UnlockedAccessoryNotice } from "@/types/api";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,6 +31,8 @@ const ChatRequestSchema = z.object({
   unitId: z.string().min(1),
   sessionId: z.number().int().positive().optional(),
   userText: z.string().min(1).max(300),
+  usedVoice: z.boolean().optional(),
+  voiceProof: z.string().min(1).max(128).optional(),
 });
 
 export async function POST(request: Request) {
@@ -39,7 +45,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "对话参数有误" }, { status: 400 });
   }
 
-  const { unitId, userText } = parsed.data;
+  const { unitId, userText, usedVoice, voiceProof } = parsed.data;
   const unit = getUnitById(unitId);
   if (!unit) {
     return NextResponse.json({ error: "找不到该单元情景" }, { status: 404 });
@@ -52,6 +58,12 @@ export async function POST(request: Request) {
     .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
     .get()!;
   const settings = db.select().from(appSettings).where(eq(appSettings.id, 1)).get()!;
+  const activeSttMode = resolveActiveSttMode({
+    sttEngine: settings.sttEngine,
+    sttApiBaseUrl: settings.sttApiBaseUrl,
+    hasSttApiKey: Boolean(settings.sttApiKey.trim()),
+  });
+  const cloudProof = usedVoice && activeSttMode !== "browser" ? voiceProof : undefined;
 
   const validGoalIds = new Set(unit.roleplay.goals.map((g) => g.id));
   let sessionId = parsed.data.sessionId;
@@ -65,7 +77,7 @@ export async function POST(request: Request) {
       .where(eq(chatSessions.id, sessionId))
       .get();
     if (existingSession) {
-      if (existingSession.unitId !== unitId || existingSession.mode !== "roleplay") {
+      if (existingSession.profileId !== DEFAULT_PROFILE_ID || existingSession.unitId !== unitId || existingSession.mode !== "roleplay") {
         return NextResponse.json({ error: "对话会话与当前关卡不匹配" }, { status: 400 });
       }
       initialCompletedGoals = parseJsonStringArray(existingSession.completedGoalsJson).filter(
@@ -151,6 +163,16 @@ export async function POST(request: Request) {
         .get()!;
     }
 
+    // Verify cloud speech against this turn. Browser Web Speech is trusted for local encouragement.
+    const verifiedCloudTurn = consumeVoiceProof(tx, cloudProof, DEFAULT_PROFILE_ID, {
+      purpose: "roleplay",
+      transcript: userText,
+    });
+    const hasVoiceTurn =
+      existingSession.hasVoiceTurn ||
+      verifiedCloudTurn ||
+      (activeSttMode === "browser" && usedVoice === true);
+
     const storedGoals = parseJsonStringArray(existingSession.completedGoalsJson).filter((id) =>
       validGoalIds.has(id)
     );
@@ -199,6 +221,8 @@ export async function POST(request: Request) {
     }
 
     let starsAwarded = 0;
+    let voiceBonusStars = 0;
+    let unlockedAccessory: UnlockedAccessoryNotice | null = null;
     const alreadyRewardedInSession = existingSession.starsEarned > 0;
 
     if (authoritativeComplete && !alreadyRewardedInSession) {
@@ -210,10 +234,15 @@ export async function POST(request: Request) {
         )
         .get();
       const alreadyRoleplayDone = prog?.roleplayDone === 1;
-      starsAwarded = alreadyRoleplayDone ? 1 : 4;
+      const baseStars = alreadyRoleplayDone ? 1 : 4;
+      voiceBonusStars = !alreadyRoleplayDone && hasVoiceTurn ? 1 : 0;
+      starsAwarded = baseStars + voiceBonusStars;
+
+      const nextStarsCount = prog
+        ? prog.storyDone + prog.phonicsDone + prog.gameDone + 1
+        : 1;
 
       if (prog) {
-        const nextStarsCount = prog.storyDone + prog.phonicsDone + prog.gameDone + 1;
         tx.update(unitProgress)
           .set({
             roleplayDone: 1,
@@ -243,6 +272,12 @@ export async function POST(request: Request) {
         moodDelta: 8,
         nowIso,
       });
+
+      unlockedAccessory = unlockUnitAccessoryIfCompleted(tx, {
+        unitId,
+        starsEarned: nextStarsCount,
+        nowIso,
+      });
     }
 
     tx.update(chatSessions)
@@ -251,6 +286,7 @@ export async function POST(request: Request) {
         summaryZh: `${unit.titleZh} · 已达成 ${finalCompletedGoals.length}/${unit.roleplay.goals.length} 个小目标`,
         starsEarned:
           starsAwarded > 0 ? existingSession.starsEarned + starsAwarded : existingSession.starsEarned,
+        hasVoiceTurn,
         updatedAt: nowIso,
       })
       .where(eq(chatSessions.id, activeSessionId!))
@@ -265,10 +301,12 @@ export async function POST(request: Request) {
     return {
       sessionId: activeSessionId!,
       starsAwarded,
+      voiceBonusStars,
+      unlockedAccessory,
       finalCompletedGoals,
       authoritativeComplete,
     };
-  });
+  }, { behavior: "immediate" });
 
   const normalizedResp = {
     ...resp,
@@ -282,5 +320,7 @@ export async function POST(request: Request) {
     usedFallback: agentResult.usedFallback,
     fallbackReason: agentResult.fallbackReason,
     starsAwarded: txResult.starsAwarded,
+    voiceBonusStars: txResult.voiceBonusStars,
+    unlockedAccessory: txResult.unlockedAccessory,
   });
 }

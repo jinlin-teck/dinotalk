@@ -11,6 +11,7 @@ export const childProfiles = sqliteTable("child_profiles", {
   petMood: integer("pet_mood").notNull().default(90),
   equippedAccessoriesJson: text("equipped_accessories_json").notNull().default("[]"),
   ownedAccessoriesJson: text("owned_accessories_json").notNull().default("[]"),
+  ownedSkinIdsJson: text("owned_skin_ids_json").notNull().default("[]"),
   dailyGoalMinutes: integer("daily_goal_minutes").notNull().default(15),
   eyeCareMinutes: integer("eye_care_minutes").notNull().default(15),
   streakDays: integer("streak_days").notNull().default(1),
@@ -68,11 +69,12 @@ export const wordMastery = sqliteTable(
     id: integer("id").primaryKey({ autoIncrement: true }),
     profileId: integer("profile_id").notNull().default(1),
     itemKey: text("item_key").notNull(),
-    itemType: text("item_type").notNull().default("word"), // 'word' | 'phonics'
+    itemType: text("item_type").notNull().default("word"), // 'word' | 'phonics' | 'sentence'
     unitId: text("unit_id").notNull(),
     masteryLevel: integer("mastery_level").notNull().default(0), // 0..5
     correctCount: integer("correct_count").notNull().default(0),
     wrongCount: integer("wrong_count").notNull().default(0),
+    reviewMissPending: integer("review_miss_pending", { mode: "boolean" }).notNull().default(false),
     nextReviewAt: text("next_review_at").notNull(),
     lastPracticedAt: text("last_practiced_at").notNull(),
   },
@@ -90,9 +92,22 @@ export const chatSessions = sqliteTable("chat_sessions", {
   completedGoalsJson: text("completed_goals_json").notNull().default("[]"),
   summaryZh: text("summary_zh").notNull().default(""),
   starsEarned: integer("stars_earned").notNull().default(0),
+  hasVoiceTurn: integer("has_voice_turn", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const voiceProofs = sqliteTable(
+  "voice_proofs",
+  {
+    tokenHash: text("token_hash").primaryKey().notNull(),
+    profileId: integer("profile_id").notNull(),
+    purpose: text("purpose", { enum: ["feed", "roleplay"] }).notNull(),
+    evidence: text("evidence").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [index("voice_proofs_expires_at_idx").on(table.expiresAt)]
+);
 
 export const chatMessages = sqliteTable(
   "chat_messages",
