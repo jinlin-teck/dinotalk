@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { appSettings } from "@/db/schema";
+import { assertSameOrigin } from "@/lib/security/endpoint-guard";
 import { synthesizeSpeech } from "@/lib/speech/tts";
 
 export const runtime = "nodejs";
@@ -15,6 +16,9 @@ const TtsSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const originError = assertSameOrigin(request);
+  if (originError) return originError;
+
   const body = await request.json().catch(() => null);
   const parsed = TtsSchema.safeParse(body);
   if (!parsed.success) {

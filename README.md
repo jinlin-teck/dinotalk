@@ -69,11 +69,30 @@ pnpm start
 
 ```bash
 cd dinotalk
+mkdir -p ./data
 docker compose up -d --build
 ```
 
 - 默认监听 `3000` 端口。
 - 孩子的学习进度数据库（`kids.db`）和 TTS 音频缓存（`audio-cache/`）会持久化保存在 `./data` 目录，升级镜像不会丢失记录。
+- 容器默认用 UID/GID `1000:1000` 启动。如果数据目录由其他普通用户拥有，在项目的 `.env` 中设置对应的 `DINOTALK_UID` 和 `DINOTALK_GID`。
+
+#### 从以 root 运行的旧镜像升级
+
+旧容器可能以 root 创建了 SQLite 文件。首次升级时，先停止旧容器并备份整个数据目录，再将目录移交给新容器的运行用户。以下命令适用于普通 Linux Docker 部署，请在宿主机终端手动执行。
+
+```bash
+docker compose build dinotalk &&
+  docker compose stop dinotalk &&
+  (umask 077 &&
+    docker compose run --rm -T --no-deps --user 0:0 --entrypoint tar dinotalk \
+      -C /app/data -czf - . > "$HOME/dinotalk-data-$(date +%Y%m%d-%H%M%S).tar.gz") &&
+  docker compose run --rm -T --no-deps --user 0:0 --entrypoint sh dinotalk \
+    -c 'chown -hR "$DINOTALK_DATA_OWNER" /app/data' &&
+  docker compose up -d --no-build dinotalk
+```
+
+启动后，用家长控制台确认旧学习记录仍可读取，再完成一次练习确认可以写入。
 
 ---
 
@@ -88,7 +107,7 @@ docker compose up -d --build
 
 ## 👨‍👩‍👧 家长控制台使用指南（`/parent`）
 
-点击右上角黑色的 **「🔒 家长」** 按钮，完成一道简单加法题（防止孩子误操作）即可进入家长后台：
+点击右上角黑色的 **「🔒 家长」** 按钮，完成一道简单加法题（防止孩子误操作）即可进入家长后台。进入后可在 **「档案与护眼」** 页签设置 4~20 位家长密码，之后进入控制台需输入密码（服务端加盐哈希存储，修改密码会立即让旧会话失效）：
 
 ### 1. 接入外部 AI 大模型（可选）
 在 **「AI 大模型设置」** 页签中，点击一键预设即可快速填入接口格式：
@@ -131,9 +150,21 @@ cd dinotalk
 
 pnpm typecheck   # TypeScript 类型检查
 pnpm lint        # ESLint 代码检查
-pnpm test        # 运行 Vitest 单元测试（SRS、发音评分、STT/WAV、游戏出题、Agent 解析、课程校验）
+pnpm test        # 运行 Vitest 单元测试（SRS、发音评分、STT/WAV、游戏出题、Agent 解析、课程校验、路由安全）
 pnpm build       # 构建生产版本
+pnpm test:e2e    # 端到端测试（自动构建并在 3100 端口用临时 DATA_DIR 启动服务）
 ```
+
+> 端到端测试默认使用 `os.tmpdir()/dinotalk-e2e-data` 作为数据目录，不会污染 `./data/kids.db`。若已有服务在运行，可设置 `TEST_BASE_URL` 复用，例如 `TEST_BASE_URL=http://127.0.0.1:3100 pnpm test:e2e`。
+
+### 可选的安全相关环境变量
+
+| 变量 | 作用 |
+| :--- | :--- |
+| `ALLOWED_ENDPOINT_HOSTS` | 出站白名单，限制 LLM / TTS / STT 可访问的域名，支持 `.home.arpa` 后缀匹配 |
+| `BLOCK_PRIVATE_ENDPOINTS=1` | 禁止访问内网与回环地址（默认允许，便于连接本机 Ollama / 局域网中转） |
+| `ALLOWED_HOSTS` | 入站 Host 白名单（含端口），缓解 DNS rebinding；设置后请包含你实际访问的地址 |
+| `SESSION_SECRET` | 家长会话签名密钥；不填会自动生成并保存在 `data/.session-secret` |
 
 ---
 

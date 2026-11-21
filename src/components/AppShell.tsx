@@ -43,14 +43,45 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
   const eyeLimit = profile?.eyeCareMinutes ?? 15;
 
   useEffect(() => {
-    const startMs = Date.now();
+    setMuted(soundEffects.isMuted());
+  }, []);
+
+  useEffect(() => {
+    const SECS_KEY = "dinotalk_visible_study_secs";
+    const ALERT_KEY = "dinotalk_eye_care_last_min";
+
+    const readNum = (key: string) => {
+      try {
+        const val = Number(sessionStorage.getItem(key) || "0");
+        return Number.isFinite(val) && val > 0 ? val : 0;
+      } catch {
+        return 0;
+      }
+    };
+
+    setSessionMinutes(Math.floor(readNum(SECS_KEY) / 60));
+
     const timer = setInterval(() => {
       if (document.visibilityState !== "visible") return;
-      const mins = Math.floor((Date.now() - startMs) / 60000);
+      const nextSecs = readNum(SECS_KEY) + 30;
+      try {
+        sessionStorage.setItem(SECS_KEY, String(nextSecs));
+      } catch {
+        // ignore storage quota errors
+      }
+      const mins = Math.floor(nextSecs / 60);
       setSessionMinutes(mins);
-      if (mins > 0 && mins >= eyeLimit && mins % eyeLimit === 0) {
+
+      const lastAlertedMin = readNum(ALERT_KEY);
+      if (mins > 0 && mins >= eyeLimit && mins % eyeLimit === 0 && mins > lastAlertedMin) {
+        try {
+          sessionStorage.setItem(ALERT_KEY, String(mins));
+        } catch {
+          // ignore
+        }
         setShowEyeCare(true);
       }
+
       fetch("/api/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },

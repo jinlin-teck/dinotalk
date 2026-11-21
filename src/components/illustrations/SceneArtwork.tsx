@@ -1,25 +1,11 @@
 "use client";
 
+import { SCENE_PALETTES } from "./visual-keys";
+
 interface SceneArtworkProps {
   sceneKey: string;
   className?: string;
 }
-
-const SCENE_PALETTES: Record<
-  string,
-  { sky: string; hill1: string; hill2: string; accent: string; label: string }
-> = {
-  dock: { sky: "#E0F2FE", hill1: "#6EE7B7", hill2: "#38BDF8", accent: "#F59E0B", label: "阳光码头" },
-  studio: { sky: "#FEF3C7", hill1: "#FBCFE8", hill2: "#FDE68A", accent: "#EC4899", label: "魔法画室" },
-  party: { sky: "#FCE7F3", hill1: "#FDE68A", hill2: "#F9A8D4", accent: "#EC4899", label: "生日派对" },
-  home: { sky: "#FFEDD5", hill1: "#FDBA74", hill2: "#FED7AA", accent: "#F97316", label: "恐龙之家" },
-  fruitshop: { sky: "#FEE2E2", hill1: "#BBF7D0", hill2: "#FECACA", accent: "#EF4444", label: "阳光水果店" },
-  zoo: { sky: "#EDE9FE", hill1: "#86EFAC", hill2: "#C4B5FD", accent: "#8B5CF6", label: "奇妙动物园" },
-  playground: { sky: "#CFFAFE", hill1: "#6EE7B7", hill2: "#A5F3FC", accent: "#06B6D4", label: "草地运动场" },
-  classroom: { sky: "#DBEAFE", hill1: "#BFDBFE", hill2: "#93C5FD", accent: "#3B82F6", label: "快乐教室" },
-  weather: { sky: "#E0F2FE", hill1: "#BAE6FD", hill2: "#7DD3FC", accent: "#0EA5E9", label: "小小气象站" },
-  toyroom: { sky: "#FEF9C3", hill1: "#FDE047", hill2: "#FDBA74", accent: "#F59E0B", label: "神奇玩具屋" },
-};
 
 export function SceneArtwork({ sceneKey, className = "" }: SceneArtworkProps) {
   const palette = SCENE_PALETTES[sceneKey] ?? SCENE_PALETTES.dock;

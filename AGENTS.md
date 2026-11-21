@@ -36,6 +36,14 @@ dinotalk/
 │   ├── lib/
 │   │   ├── srs.ts                    # 儿童友好间隔重复算法 [0,1,2,4,7,14] 天
 │   │   ├── sound-effects.ts          # Web Audio API 本地合成童趣交互音效（客户端）
+│   │   ├── auth/
+│   │   │   └── parent-session.ts     # 家长 PIN(scrypt)、HMAC 会话 Cookie、算术题与服务端限流
+│   │   ├── security/
+│   │   │   ├── endpoint-guard.ts     # 出站 URL/Host 白名单、同源校验、密钥来源绑定
+│   │   │   ├── provider-fetch.ts     # 带 DNS 校验与禁止重定向的出站 fetch
+│   │   │   └── rate-limit.ts         # 内存滑动窗口限流（按来源 + 全局上限）
+│   │   ├── services/
+│   │   │   └── learning-service.ts   # 档案序列化、SRS 写入、每日统计与星星结算
 │   │   ├── ai/
 │   │   │   ├── presets.ts            # DeepSeek / 通义 / OpenAI / Gemini / 豆包 / Ollama 预设
 │   │   │   ├── provider.ts           # 通用 OpenAI 兼容 /chat/completions 客户端与密钥脱敏
@@ -55,7 +63,14 @@ dinotalk/
 │   │   ├── illustrations/
 │   │   │   ├── DinoCharacter.tsx     # 7 种情绪 + 4 种配饰的 SVG 动态小恐龙
 │   │   │   ├── SceneArtwork.tsx      # 10 个单元剧场专属 SVG 场景背景
-│   │   │   └── WordVisual.tsx        # 零外链依赖的单词/颜色/数字视觉卡片
+│   │   │   ├── WordVisual.tsx        # 零外链依赖的单词/颜色/数字视觉卡片
+│   │   │   └── visual-keys.ts        # 视觉键 -> SVG/emoji/配色映射与课程校验用查询函数
+│   │   ├── parent/
+│   │   │   ├── ParentGate.tsx        # 家长锁（算术题 / PIN 解锁）
+│   │   │   ├── LlmSettingsTab.tsx    # 大模型配置页签
+│   │   │   ├── SpeechSettingsTab.tsx # TTS/STT 配置页签
+│   │   │   ├── ProfileSettingsTab.tsx# 档案、护眼与家长密码页签
+│   │   │   └── LearningReportTab.tsx # 学习成长报告页签
 │   │   └── unit/
 │   │       ├── StoryCardsTab.tsx     # Step 1: 绘本点读屋（慢速点读 + 跟读打分）
 │   │       ├── PhonicsTab.tsx        # Step 2: 自然拼读小站（口诀 + 听音辨音小测）
@@ -70,7 +85,8 @@ dinotalk/
 │       ├── pet/page.tsx              # `/pet` 小恐龙喂养与换装小屋
 │       ├── chat/page.tsx             # `/chat` 和 Dino 自由聊聊
 │       ├── parent/page.tsx           # `/parent` 家长控制台（数学锁/配置/测试/成长报告）
-│       └── api/                      # 10 个 Node.js Runtime REST 路由
+│       └── api/                      # 12 个 Node.js Runtime REST 路由
+│           ├── parent/auth/route.ts  # GET/POST 家长验证（算术题 / PIN / 登出 / 设置密码）
 │           ├── profile/route.ts      # GET/PATCH 档案、喂食、买/戴装扮、学习心跳计时
 │           ├── progress/route.ts     # GET/POST 单元 4 环节进度结算与 SRS 写入
 │           ├── review/route.ts       # GET/POST SRS 到期队列抽取与复习结算
@@ -78,9 +94,10 @@ dinotalk/
 │           ├── agent/freetalk/route.ts # POST 自由英语对话伙伴
 │           ├── speech/tts/route.ts   # POST 服务端 TTS 音频或浏览器降级指令
 │           ├── speech/stt/route.ts   # POST 云端语音转写代理（支持 MiniMax asr-1.0 与 OpenAI Whisper）
-│           ├── settings/route.ts     # GET(脱敏)/PUT 系统与模型配置
-│           ├── settings/test/route.ts# POST 一键测试 LLM / TTS / STT 连通性
-│           └── report/route.ts       # GET 近7天趋势、单元矩阵、词汇墙与对话回顾
+│           ├── speech/config/route.ts# GET 公开的 STT 模式（仅返回 sttMode，不含任何密钥）
+│           ├── settings/route.ts     # GET(脱敏)/PUT 系统与模型配置（需家长会话）
+│           ├── settings/test/route.ts# POST 一键测试 LLM / TTS / STT 连通性（需家长会话）
+│           └── report/route.ts       # GET 近7天趋势、单元矩阵、词汇墙与对话回顾（需家长会话）
 ├── Dockerfile                        # Node 24 多阶段 standalone 镜像（设 DOCKER_BUILD=1）
 ├── docker-compose.yml                # 挂载 ./data 持久化数据卷
 ├── next.config.ts                    # serverExternalPackages + node:sqlite external 配置
@@ -110,7 +127,15 @@ dinotalk/
    - `llmApiKey`、`ttsApiKey`、`sttApiKey` 仅存储在服务端 SQLite（或 `.env.local`）。
    - `GET /api/settings` 与 `PUT /api/settings` **绝不能**返回明文密钥，只能返回 `maskSecret()` 处理后的掩码及 `has*ApiKey` 布尔值。
    - `PUT /api/settings` 在未传入新密钥或传入空串时必须保留库内已有密钥，仅当显式传入 `clearLlmApiKey: true` 等标志时才清空。
-4. **优雅降级（儿童端零报错）**：
+   - 已存密钥只能复用到**同一 origin**（`canReuseStoredSecret()`）；接口地址换域名时必须要求重新输入密钥。目标地址为空时不视为换来源。
+4. **家长鉴权与入站安全**：
+   - `/api/settings`、`/api/settings/test`、`/api/report`、`PATCH /api/profile` 的 `update_profile` 以及 `/api/parent/auth` 的 `set_pin` **必须**先调用 `requireParentAuth()`；儿童端只读接口（`/api/profile` GET、`/api/progress`、`/api/review`、`/api/speech/config`）保持公开。
+   - 所有写操作路由必须调用 `assertJsonSameOrigin()`；`/api/speech/tts` 等需要优雅降级的路由至少调用 `assertSameOrigin()`。
+   - 家长会话使用 HMAC 签名 Cookie（`HttpOnly` + `SameSite=Lax`），`parentSessionVersion` 递增即可让旧会话全部失效；修改密码必须同步下发新 Cookie。
+   - 算术题答案只保存在服务端内存（`createMathChallenge`），token 仅携带 nonce 与过期时间，且一次性使用，禁止把答案写回 token。
+   - 可选的 `ALLOWED_HOSTS` 用于校验入站 Host（缓解 DNS rebinding）：`src/middleware.ts` 已对全部 `/api/*` 统一拦截，新增需要鉴权的路由时也应走 `requireParentAuth()` 以获得同源校验。
+   - 云端 STT 等会消耗额度的公开接口必须经过 `rate-limit.ts` 限流。
+5. **优雅降级（儿童端零报错）**：
    - `POST /api/speech/tts` 在 `browser` 模式或上游 Edge-TTS / OpenAI TTS 异常时，必须返回 **HTTP 200 `{ fallback: "browser" }`**，由前端 `useSpeech` 静默切至 `window.speechSynthesis`，不得返回 500 阻塞孩子点读。
    - `POST /api/agent/chat` 与 `/api/agent/freetalk` 在未配置 LLM 或模型调用超时/解析失败时，自动降级到 `fallback-agent.ts` 并返回 `usedFallback: true`。
 
@@ -130,7 +155,7 @@ dinotalk/
 ### 新增教学单元或激活 L1 / L2 关卡
 1. 在 `src/data/curriculum/` 中参照 `UnitDef`（`types.ts`）编写新单元数据，并确保每个 `VocabCard.id` 与 `PhonicsItem.id` 全局唯一（例如 `l1-u1-apple`）。
 2. 为每个 `roleplay.goals` 配置唯一的 `id`、`keywords` 及对应的 `goalReplies[goal.id]`，保证无外部 LLM 时也能顺畅完成 3 步情景剧场。
-3. 在 `src/data/curriculum/index.ts` 注册单元或更新 `CURRICULUM_LEVELS` 状态；如有新 `visualKey` / `sceneKey`，同步补充 `WordVisual.tsx` / `SceneArtwork.tsx`。
+3. 在 `src/data/curriculum/index.ts` 注册单元或更新 `CURRICULUM_LEVELS` 状态；如有新 `visualKey` / `sceneKey`，同步补充 `src/components/illustrations/visual-keys.ts`（`curriculum.test.ts` 会校验每个 key 都有对应插画）。
 4. 更新并运行 `src/data/curriculum/curriculum.test.ts` 验证数据完整性。
 
 ### 接入新的 OpenAI 兼容模型预设或语音音色
@@ -154,8 +179,6 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm build
 ```
 
 ### 运行 E2E 测试的注意事项
-- 端到端测试请务必指定独立的临时 `DATA_DIR` 和非冲突端口（如 `PORT=3100`），避免污染用户的日常学习数据库 `dinotalk/data/kids.db`：
-  ```bash
-  DATA_DIR=/tmp/dinotalk-test-data PORT=3100 pnpm start
-  ```
-- 测试完成后及时清理临时 spec、报告目录（`test-results/`、`playwright-report/`）及临时数据目录。
+- 直接执行 `pnpm test:e2e`：`playwright.config.ts` 的 `webServer` 会执行 `pnpm e2e:serve`（先 `next build` 再 `next start`），并自动使用 `os.tmpdir()/dinotalk-e2e-data` 作为 `DATA_DIR`、`PORT=3100`，不会污染用户的日常学习数据库 `dinotalk/data/kids.db`。
+- 若已有服务在运行，可设置 `TEST_BASE_URL=http://127.0.0.1:3100` 复用，跳过自动启动。
+- 测试完成后及时清理报告目录（`test-results/`、`playwright-report/`）。

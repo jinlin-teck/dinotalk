@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray } from "drizzle-orm";
 import { getDb, todayDateKey } from "@/db";
 import {
   chatMessages,
@@ -10,20 +10,52 @@ import {
   wordMastery,
 } from "@/db/schema";
 import { getAllPhonics, getAllVocab, L0_UNITS } from "@/data/curriculum";
+import { requireParentAuth } from "@/lib/auth/parent-session";
+import { DEFAULT_PROFILE_ID } from "@/lib/services/learning-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const authError = requireParentAuth(request);
+  if (authError) return authError;
+
   const db = getDb();
-  const profile = db.select().from(childProfiles).where(eq(childProfiles.id, 1)).get();
-  const progressRows = db.select().from(unitProgress).where(eq(unitProgress.profileId, 1)).all();
-  const masteryRows = db.select().from(wordMastery).where(eq(wordMastery.profileId, 1)).all();
-  const logRows = db.select().from(dailyLogs).where(eq(dailyLogs.profileId, 1)).all();
+  const profile = db
+    .select()
+    .from(childProfiles)
+    .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+    .get();
+  const progressRows = db
+    .select()
+    .from(unitProgress)
+    .where(eq(unitProgress.profileId, DEFAULT_PROFILE_ID))
+    .all();
+  const masteryRows = db
+    .select()
+    .from(wordMastery)
+    .where(eq(wordMastery.profileId, DEFAULT_PROFILE_ID))
+    .all();
+
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+  const sevenDaysAgoKey = todayDateKey(sevenDaysAgo);
+
+  const logRows = db
+    .select()
+    .from(dailyLogs)
+    .where(
+      and(
+        eq(dailyLogs.profileId, DEFAULT_PROFILE_ID),
+        gte(dailyLogs.dateKey, sevenDaysAgoKey)
+      )
+    )
+    .all();
+
   const sessionRows = db
     .select()
     .from(chatSessions)
-    .where(eq(chatSessions.profileId, 1))
+    .where(eq(chatSessions.profileId, DEFAULT_PROFILE_ID))
     .orderBy(desc(chatSessions.id))
     .limit(10)
     .all();
@@ -79,13 +111,24 @@ export async function GET() {
     };
   });
 
-  const recentSessions = sessionRows.map((s) => {
-    const msgs = db
+  const sessionIds = sessionRows.map((s) => s.id);
+  const msgsBySession = new Map<number, typeof chatMessages.$inferSelect[]>();
+  if (sessionIds.length > 0) {
+    const allMsgs = db
       .select()
       .from(chatMessages)
-      .where(eq(chatMessages.sessionId, s.id))
+      .where(inArray(chatMessages.sessionId, sessionIds))
       .orderBy(asc(chatMessages.id))
       .all();
+    for (const m of allMsgs) {
+      const list = msgsBySession.get(m.sessionId);
+      if (list) list.push(m);
+      else msgsBySession.set(m.sessionId, [m]);
+    }
+  }
+
+  const recentSessions = sessionRows.map((s) => {
+    const msgs = msgsBySession.get(s.id) ?? [];
     return {
       id: s.id,
       unitId: s.unitId,

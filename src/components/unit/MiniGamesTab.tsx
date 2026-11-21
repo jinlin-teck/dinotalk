@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, RotateCcw, Sparkles, Volume2 } from "lucide-react";
 import type { UnitDef, VocabCard } from "@/data/curriculum/types";
 import { WordVisual } from "@/components/illustrations/WordVisual";
@@ -42,23 +42,49 @@ export function MiniGamesTab({ unit, isDone, onComplete, speak }: MiniGamesTabPr
   const [r3Idx, setR3Idx] = useState(0);
   const [r3Msg, setR3Msg] = useState<string | null>(null);
   const [gameCompleted, setGameCompleted] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
+  const timersRef = useRef<number[]>([]);
+
+  const clearAllTimers = useCallback(() => {
+    for (const id of timersRef.current) {
+      window.clearTimeout(id);
+    }
+    timersRef.current = [];
+  }, []);
+
+  const scheduleTimer = useCallback((fn: () => void, ms: number) => {
+    const id = window.setTimeout(() => {
+      timersRef.current = timersRef.current.filter((t) => t !== id);
+      fn();
+    }, ms);
+    timersRef.current.push(id);
+  }, []);
+
+  useEffect(() => {
+    return () => clearAllTimers();
+  }, [clearAllTimers]);
+
+  const totalPairs = Math.max(1, Math.floor(initialTiles.length / 2));
 
   const handleR1Pick = (picked: VocabCard) => {
     const q = round1Questions[r1Idx];
-    if (!q) return;
+    if (!q || advancing) return;
     if (picked.id === q.target.id) {
       soundEffects.playCorrect();
+      setAdvancing(true);
       if (r1Idx + 1 >= round1Questions.length) {
         setR1Msg("第一关通关！进入翻牌配对游戏！");
-        setTimeout(() => {
+        scheduleTimer(() => {
           setRound(2);
           setR1Msg(null);
+          setAdvancing(false);
         }, 550);
       } else {
         setR1Msg(`太棒啦！就是 ${q.target.word}（${q.target.zh}）！`);
-        setTimeout(() => {
+        scheduleTimer(() => {
           setR1Idx((i) => i + 1);
           setR1Msg(null);
+          setAdvancing(false);
         }, 550);
       }
     } else {
@@ -69,6 +95,7 @@ export function MiniGamesTab({ unit, isDone, onComplete, speak }: MiniGamesTabPr
   };
 
   const handleTileClick = (tile: MatchTile) => {
+    if (advancing) return;
     if (matchedPairs.includes(tile.pairId) || flippedUids.includes(tile.uid)) return;
     if (flippedUids.length >= 2) return;
 
@@ -88,20 +115,24 @@ export function MiniGamesTab({ unit, isDone, onComplete, speak }: MiniGamesTabPr
         const nextMatched = [...matchedPairs, tile.pairId];
         setMatchedPairs(nextMatched);
         setFlippedUids([]);
-        if (nextMatched.length >= 3) {
-          setTimeout(() => setRound(3), 550);
+        if (nextMatched.length >= totalPairs) {
+          setAdvancing(true);
+          scheduleTimer(() => {
+            setRound(3);
+            setAdvancing(false);
+          }, 550);
         }
       } else {
         setMistakes((m) => m + 1);
         soundEffects.playGentleTryAgain();
-        setTimeout(() => setFlippedUids([]), 650);
+        scheduleTimer(() => setFlippedUids([]), 650);
       }
     }
   };
 
   const handleR3Pick = async (picked: VocabCard) => {
     const q = round3Questions[r3Idx];
-    if (!q) return;
+    if (!q || advancing || gameCompleted) return;
     if (picked.id === q.target.id) {
       soundEffects.playCorrect();
       speak(picked.word, { lang: "en" });
@@ -109,10 +140,12 @@ export function MiniGamesTab({ unit, isDone, onComplete, speak }: MiniGamesTabPr
         setGameCompleted(true);
         setR3Msg("太厉害了！三轮闯关全部成功！");
       } else {
+        setAdvancing(true);
         setR3Msg("啵！戳对彩色泡泡啦！");
-        setTimeout(() => {
+        scheduleTimer(() => {
           setR3Idx((i) => i + 1);
           setR3Msg(null);
+          setAdvancing(false);
         }, 500);
       }
     } else {
@@ -135,6 +168,8 @@ export function MiniGamesTab({ unit, isDone, onComplete, speak }: MiniGamesTabPr
   };
 
   const resetGames = () => {
+    clearAllTimers();
+    setAdvancing(false);
     setRound(1);
     setR1Idx(0);
     setR1Msg(null);
@@ -224,7 +259,7 @@ export function MiniGamesTab({ unit, isDone, onComplete, speak }: MiniGamesTabPr
         <div className="bg-white rounded-3xl border-4 border-purple-200 p-5 sm:p-7 space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-xl font-black text-slate-800">🃏 翻牌找朋友（已配对 {matchedPairs.length} / 3）</h3>
+              <h3 className="text-xl font-black text-slate-800">🃏 翻牌找朋友（已配对 {matchedPairs.length} / {totalPairs}）</h3>
               <p className="text-sm text-slate-600">把英文单词卡片和对应图画连在一起吧！</p>
             </div>
           </div>

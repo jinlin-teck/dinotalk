@@ -71,6 +71,7 @@ describe("wav-encoder", () => {
 describe("transcribeWithMiniMax", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("sends multipart form data with Bearer auth and language header", async () => {
@@ -124,7 +125,7 @@ describe("transcribeWithMiniMax", () => {
         apiKey: "bad-key",
         model: "asr-1.0",
       })
-    ).rejects.toThrow("MiniMax STT 错误 (1004): invalid api key");
+    ).rejects.toThrow(/^MiniMax STT 错误 \(1004\)$/);
   });
 
   it("keeps OpenAI Whisper transcription working as before", async () => {

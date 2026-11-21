@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, uniqueIndex, index } from "drizzle-orm/sqlite-core";
 
 export const childProfiles = sqliteTable("child_profiles", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -39,6 +39,7 @@ export const appSettings = sqliteTable("app_settings", {
   sttApiKey: text("stt_api_key").notNull().default(""),
   sttApiModel: text("stt_api_model").notNull().default("whisper-1"),
   parentPin: text("parent_pin").notNull().default(""),
+  parentSessionVersion: integer("parent_session_version").notNull().default(0),
   updatedAt: text("updated_at").notNull(),
 });
 
@@ -77,6 +78,7 @@ export const wordMastery = sqliteTable(
   },
   (table) => [
     uniqueIndex("word_mastery_profile_item_idx").on(table.profileId, table.itemKey),
+    index("word_mastery_profile_review_idx").on(table.profileId, table.nextReviewAt),
   ]
 );
 
@@ -92,16 +94,20 @@ export const chatSessions = sqliteTable("chat_sessions", {
   updatedAt: text("updated_at").notNull(),
 });
 
-export const chatMessages = sqliteTable("chat_messages", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  sessionId: integer("session_id").notNull(),
-  role: text("role").notNull(), // 'assistant' | 'user'
-  englishText: text("english_text").notNull(),
-  chineseText: text("chinese_text").notNull().default(""),
-  emotion: text("emotion").notNull().default("happy"),
-  suggestionsJson: text("suggestions_json").notNull().default("[]"),
-  createdAt: text("created_at").notNull(),
-});
+export const chatMessages = sqliteTable(
+  "chat_messages",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    sessionId: integer("session_id").notNull(),
+    role: text("role").notNull(), // 'assistant' | 'user'
+    englishText: text("english_text").notNull(),
+    chineseText: text("chinese_text").notNull().default(""),
+    emotion: text("emotion").notNull().default("happy"),
+    suggestionsJson: text("suggestions_json").notNull().default("[]"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("chat_messages_session_idx").on(table.sessionId)]
+);
 
 export const dailyLogs = sqliteTable(
   "daily_logs",

@@ -90,25 +90,35 @@ export default function FreeTalkPage() {
           userText: clean,
         }),
       });
-      const data = await res.json();
-      if (data?.sessionId) setSessionId(data.sessionId);
-      const resp = data?.response;
-      if (resp) {
-        setMood(resp.emotion || "happy");
-        setSuggestions(resp.nextSuggestions || []);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `a-${Date.now()}`,
-            role: "assistant",
-            englishText: resp.englishReply,
-            chineseText: resp.chineseHint,
-          },
-        ]);
-        speech.speak(resp.englishReply, { lang: "en" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.response) {
+        throw new Error(data?.error || "freetalk_failed");
       }
+      if (data.sessionId) setSessionId(data.sessionId);
+      const resp = data.response;
+      setMood(resp.emotion || "happy");
+      setSuggestions(resp.nextSuggestions || []);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: "assistant",
+          englishText: resp.englishReply,
+          chineseText: resp.chineseHint,
+        },
+      ]);
+      speech.speak(resp.englishReply, { lang: "en" });
     } catch {
       setMood("happy");
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: "assistant",
+          englishText: "Oops! Let's try again!",
+          chineseText: "刚才信号开小差啦，再发一次或点上面提示气泡试试看~",
+        },
+      ]);
     } finally {
       setSending(false);
       setDraft("");
@@ -239,6 +249,7 @@ export default function FreeTalkPage() {
           >
             <input
               type="text"
+              maxLength={300}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="输入中文或英文，例如：西瓜/苹果用英语怎么说？"

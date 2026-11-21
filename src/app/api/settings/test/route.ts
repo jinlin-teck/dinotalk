@@ -3,8 +3,16 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { appSettings } from "@/db/schema";
-import { callChatCompletion, normalizeBaseUrl } from "@/lib/ai/provider";
-import { MINIMAX_STT_DEFAULT_MODEL, transcribeWithMiniMax } from "@/lib/speech/stt";
+import { callChatCompletion, LlmProviderError, stripReasoningTags } from "@/lib/ai/provider";
+import { requireParentAuth } from "@/lib/auth/parent-session";
+import {
+  assertJsonSameOrigin,
+  canReuseStoredSecret,
+  validateEndpointUrl,
+} from "@/lib/security/endpoint-guard";
+import { fetchProviderEndpoint } from "@/lib/security/provider-fetch";
+import { resolveSttBaseUrl } from "@/lib/speech/constants";
+import { MINIMAX_STT_DEFAULT_MODEL, SttProviderError, transcribeWithMiniMax } from "@/lib/speech/stt";
 import { synthesizeSpeech } from "@/lib/speech/tts";
 import { createSilentWavBuffer } from "@/lib/speech/wav-encoder";
 
@@ -26,7 +34,16 @@ const TestSchema = z.object({
     .optional(),
 });
 
+const ORIGIN_CHANGED_SECRET_ERROR =
+  "接口域名已变更，为保护已存密钥安全，请重新填写该接口对应的 API Key 后再测试";
+
 export async function POST(request: Request) {
+  const originError = assertJsonSameOrigin(request);
+  if (originError) return originError;
+
+  const authError = requireParentAuth(request);
+  if (authError) return authError;
+
   const body = await request.json().catch(() => null);
   const parsed = TestSchema.safeParse(body);
   if (!parsed.success) {
@@ -38,15 +55,43 @@ export async function POST(request: Request) {
   if (!settings) {
     return NextResponse.json({ ok: false, message: "配置尚未初始化" }, { status: 404 });
   }
+  const sessionError = requireParentAuth(request, settings.parentSessionVersion);
+  if (sessionError) return sessionError;
 
   const { target, override } = parsed.data;
   const started = Date.now();
 
   if (target === "llm") {
+    const provider = override?.provider || settings.llmProvider;
+    const rawBaseUrl = override?.baseUrl ?? settings.llmBaseUrl;
+    const urlCheck = validateEndpointUrl(rawBaseUrl, { allowEmpty: false });
+    if (!urlCheck.ok) {
+      return NextResponse.json(
+        { ok: false, latencyMs: Date.now() - started, message: urlCheck.error },
+        { status: 400 }
+      );
+    }
+
+    let apiKey = override?.apiKey?.trim() ?? "";
+    if (!apiKey) {
+      if (canReuseStoredSecret(urlCheck.normalized, settings.llmBaseUrl)) {
+        apiKey = settings.llmApiKey;
+      } else if (settings.llmApiKey.trim() && provider !== "ollama") {
+        return NextResponse.json(
+          {
+            ok: false,
+            latencyMs: Date.now() - started,
+            message: ORIGIN_CHANGED_SECRET_ERROR,
+          },
+          { status: 400 }
+        );
+      }
+    }
+
     const cfg = {
-      provider: override?.provider || settings.llmProvider,
-      baseUrl: override?.baseUrl ?? settings.llmBaseUrl,
-      apiKey: override?.apiKey?.trim() ? override.apiKey.trim() : settings.llmApiKey,
+      provider,
+      baseUrl: urlCheck.normalized,
+      apiKey,
       model: override?.model ?? settings.llmModel,
       temperature: settings.llmTemperature,
     };
@@ -58,19 +103,20 @@ export async function POST(request: Request) {
           { role: "system", content: "Reply with a short friendly English greeting under 8 words." },
           { role: "user", content: "Say hello to a 7-year-old student!" },
         ],
-        { timeoutMs: 15000, maxTokens: 40, jsonMode: false }
+        { timeoutMs: 25000, maxTokens: 512, jsonMode: false }
       );
+      const cleanedSample = stripReasoningTags(sample).trim() || sample.trim();
       return NextResponse.json({
         ok: true,
         latencyMs: Date.now() - started,
         message: "大模型连接成功！",
-        sample: sample.trim(),
+        sample: apiKey ? cleanedSample.replaceAll(apiKey, "****") : cleanedSample,
       });
     } catch (err) {
       return NextResponse.json({
         ok: false,
         latencyMs: Date.now() - started,
-        message: err instanceof Error ? err.message : "连接大模型失败",
+        message: err instanceof LlmProviderError ? err.message : "连接大模型失败",
       });
     }
   }
@@ -85,6 +131,36 @@ export async function POST(request: Request) {
       });
     }
 
+    let ttsBaseUrl = "";
+    let ttsApiKey = "";
+    if (engine === "openai") {
+      const rawTtsUrl = override?.baseUrl ?? settings.ttsApiBaseUrl;
+      const urlCheck = validateEndpointUrl(rawTtsUrl, { allowEmpty: false });
+      if (!urlCheck.ok) {
+        return NextResponse.json(
+          { ok: false, latencyMs: Date.now() - started, message: urlCheck.error },
+          { status: 400 }
+        );
+      }
+      ttsBaseUrl = urlCheck.normalized;
+
+      ttsApiKey = override?.apiKey?.trim() ?? "";
+      if (!ttsApiKey) {
+        if (canReuseStoredSecret(ttsBaseUrl, settings.ttsApiBaseUrl)) {
+          ttsApiKey = settings.ttsApiKey;
+        } else if (settings.ttsApiKey.trim()) {
+          return NextResponse.json(
+            {
+              ok: false,
+              latencyMs: Date.now() - started,
+              message: ORIGIN_CHANGED_SECRET_ERROR,
+            },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
     const res = await synthesizeSpeech({
       text: "Hello, little explorer!",
       lang: "en",
@@ -92,9 +168,10 @@ export async function POST(request: Request) {
       voiceEn: override?.voiceEn || settings.ttsVoiceEn,
       voiceZh: settings.ttsVoiceZh,
       speed: override?.speed ?? settings.ttsSpeed,
-      apiBaseUrl: override?.baseUrl ?? settings.ttsApiBaseUrl,
-      apiKey: override?.apiKey?.trim() ? override.apiKey.trim() : settings.ttsApiKey,
+      apiBaseUrl: ttsBaseUrl,
+      apiKey: ttsApiKey,
       apiModel: override?.model ?? settings.ttsApiModel,
+      skipCache: true,
     });
 
     if (res.mode === "audio") {
@@ -122,7 +199,33 @@ export async function POST(request: Request) {
     });
   }
 
-  const key = override?.apiKey?.trim() ? override.apiKey.trim() : settings.sttApiKey;
+  const storedSttUrl = resolveSttBaseUrl(settings.sttEngine, settings.sttApiBaseUrl);
+  const rawSttUrl = resolveSttBaseUrl(sttEngine, override?.baseUrl ?? settings.sttApiBaseUrl);
+
+  const sttUrlCheck = validateEndpointUrl(rawSttUrl, { allowEmpty: false });
+  if (!sttUrlCheck.ok) {
+    return NextResponse.json(
+      { ok: false, latencyMs: Date.now() - started, message: sttUrlCheck.error },
+      { status: 400 }
+    );
+  }
+
+  let key = override?.apiKey?.trim() ?? "";
+  if (!key) {
+    if (canReuseStoredSecret(sttUrlCheck.normalized, storedSttUrl)) {
+      key = settings.sttApiKey;
+    } else if (settings.sttApiKey.trim()) {
+      return NextResponse.json(
+        {
+          ok: false,
+          latencyMs: Date.now() - started,
+          message: ORIGIN_CHANGED_SECRET_ERROR,
+        },
+        { status: 400 }
+      );
+    }
+  }
+
   if (sttEngine === "minimax") {
     if (!key.trim()) {
       return NextResponse.json({
@@ -134,11 +237,12 @@ export async function POST(request: Request) {
 
     try {
       const wavBuffer = createSilentWavBuffer(400, 16000);
-      const model = (override?.model ?? settings.sttApiModel).trim() || MINIMAX_STT_DEFAULT_MODEL;
+      const model =
+        (override?.model ?? settings.sttApiModel).trim() || MINIMAX_STT_DEFAULT_MODEL;
       await transcribeWithMiniMax({
         audioBlob: new Blob([wavBuffer], { type: "audio/wav" }),
         filename: "ping.wav",
-        baseUrl: override?.baseUrl ?? settings.sttApiBaseUrl,
+        baseUrl: sttUrlCheck.normalized,
         apiKey: key,
         model,
       });
@@ -151,25 +255,17 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: false,
         latencyMs: Date.now() - started,
-        message: err instanceof Error ? err.message : "MiniMax 语音识别连接失败",
+        message: err instanceof SttProviderError ? err.message : "MiniMax 语音识别连接失败",
       });
     }
   }
 
-  const base = normalizeBaseUrl(override?.baseUrl ?? settings.sttApiBaseUrl);
-  if (!base) {
-    return NextResponse.json({
-      ok: false,
-      latencyMs: Date.now() - started,
-      message: "请填写 Whisper STT 的 Base URL",
-    });
-  }
-
   try {
-    const modelsUrl = `${base}/models`;
+    const modelsUrl = `${sttUrlCheck.normalized}/models`;
     const headers: Record<string, string> = {};
     if (key) headers.Authorization = `Bearer ${key}`;
-    const res = await fetch(modelsUrl, { headers, signal: AbortSignal.timeout(8000) });
+    const res = await fetchProviderEndpoint(modelsUrl, { headers, signal: AbortSignal.timeout(8000) });
+    await res.body?.cancel();
     if (res.status === 401 || res.status === 403) {
       return NextResponse.json({
         ok: false,
@@ -182,11 +278,11 @@ export async function POST(request: Request) {
       latencyMs: Date.now() - started,
       message: `STT 接口可达 (HTTP ${res.status})`,
     });
-  } catch (err) {
+  } catch {
     return NextResponse.json({
       ok: false,
       latencyMs: Date.now() - started,
-      message: `STT 接口无法访问：${err instanceof Error ? err.message : "网络错误"}`,
+      message: "STT 接口无法访问，请检查网络和接口地址",
     });
   }
 }

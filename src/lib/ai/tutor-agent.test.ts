@@ -44,9 +44,45 @@ describe("AI Tutor Agent parsing and local fallback engine", () => {
     expect(t3.emotion).toBe("cheering");
   });
 
-  it("answers Chinese word lookup questions in fallback free-talk mode", () => {
-    const res = runFallbackFreeTalkTurn("苹果用英语怎么说？");
-    expect(res.englishReply.toLowerCase()).toContain("apple");
-    expect(res.chineseHint).toContain("apple");
+  it("answers Chinese word lookup questions and avoids false-positive substring matches in fallback free-talk mode", () => {
+    const appleRes = runFallbackFreeTalkTurn("苹果用英语怎么说？");
+    expect(appleRes.englishReply.toLowerCase()).toContain("apple");
+    expect(appleRes.chineseHint).toContain("apple");
+
+    const nineRes = runFallbackFreeTalkTurn("九用英语怎么说？");
+    expect(nineRes.englishReply.toLowerCase()).toContain("nine");
+
+    // Must not falsely match '一' -> 'one' or '水' -> 'water' or 'hi' inside 'white'
+    const storyRes = runFallbackFreeTalkTurn("给我讲一个故事");
+    expect(storyRes.englishReply.toLowerCase()).toContain("sunny day");
+    expect(storyRes.masteredWords).toContain("rabbit");
+
+    const riddleRes = runFallbackFreeTalkTurn("再猜一个谜语");
+    expect(riddleRes.englishReply.toLowerCase()).toContain("riddle");
+
+    const fruitRes = runFallbackFreeTalkTurn("水果用英语怎么说？");
+    expect(fruitRes.englishReply.toLowerCase()).not.toContain("water");
+
+    const whiteRes = runFallbackFreeTalkTurn("I like white!");
+    expect(whiteRes.masteredWords).not.toContain("hi");
+
+    const helloRes = runFallbackFreeTalkTurn("Hello!");
+    expect(helloRes.englishReply.toLowerCase()).toContain("how are you");
+  });
+
+  it("does not allow LLM isSceneComplete=true to bypass unfinished scene goals", () => {
+    const raw = JSON.stringify({
+      englishReply: "Great job!",
+      chineseHint: "太棒了",
+      emotion: "cheering",
+      praise: "真棒！",
+      completedGoalIds: ["u1-g1"],
+      nextSuggestions: [{ en: "I am Alex.", zh: "我叫 Alex。", icon: "👋" }],
+      masteredWords: ["hello"],
+      isSceneComplete: true,
+    });
+    const parsed = parseAgentJson(raw, unit1, []);
+    expect(parsed.completedGoalIds).toEqual(["u1-g1"]);
+    expect(parsed.isSceneComplete).toBe(false);
   });
 });

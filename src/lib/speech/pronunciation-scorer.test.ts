@@ -33,4 +33,16 @@ describe("PronunciationScorer for 7yo beginners", () => {
     expect(sentenceRes.passed).toBe(true);
     expect(sentenceRes.stars).toBeGreaterThanOrEqual(2);
   });
+
+  it("does not give full score on substring containment, empty targets, or distinct CVC words", () => {
+    const breadVsRed = scorePronunciation("bread", "red");
+    expect(breadVsRed.score).toBeLessThan(100);
+
+    const emptyTarget = scorePronunciation("hello", "");
+    expect(emptyTarget.passed).toBe(false);
+    expect(emptyTarget.score).toBe(0);
+
+    const catVsHat = scorePronunciation("cat", "hat");
+    expect(catVsHat.score).toBeLessThan(80);
+  });
 });

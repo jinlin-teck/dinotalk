@@ -1,14 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Gift, RotateCcw, Sparkles, Volume2 } from "lucide-react";
 import { AppShell, type ProfileSummary } from "@/components/AppShell";
 import { WordVisual } from "@/components/illustrations/WordVisual";
 import { DinoCharacter } from "@/components/illustrations/DinoCharacter";
 import { useSpeech } from "@/hooks/useSpeech";
 import { soundEffects } from "@/lib/sound-effects";
-import type { EnrichedReviewItem } from "@/app/api/review/route";
+import type { EnrichedReviewItem } from "@/types/api";
 
 export default function DailyReviewPage() {
   const [profile, setProfile] = useState<(ProfileSummary & { equippedAccessories?: string[] }) | null>(null);
@@ -20,8 +20,22 @@ export default function DailyReviewPage() {
   const [earnedStars, setEarnedStars] = useState(0);
   const [doneCount, setDoneCount] = useState(0);
   const [completed, setCompleted] = useState(false);
+  const [submittingPick, setSubmittingPick] = useState(false);
+  const nextTimerRef = useRef<number | null>(null);
 
   const speech = useSpeech();
+
+  const refreshProfileOnly = useCallback(async () => {
+    try {
+      const profRes = await fetch("/api/profile");
+      if (profRes.ok) {
+        const pd = await profRes.json();
+        setProfile(pd.profile);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -46,6 +60,11 @@ export default function DailyReviewPage() {
 
   useEffect(() => {
     loadData();
+    return () => {
+      if (nextTimerRef.current !== null) {
+        window.clearTimeout(nextTimerRef.current);
+      }
+    };
   }, [loadData]);
 
   const currentItem = items[idx];
@@ -70,11 +89,14 @@ export default function DailyReviewPage() {
   }, [currentItem]);
 
   const handlePick = async (isTarget: boolean, text: string) => {
-    if (!currentItem || feedback?.ok) return;
+    if (!currentItem || feedback?.ok || submittingPick) return;
+
+    const spokenText = currentItem.audioText || currentItem.displayText;
 
     if (isTarget) {
+      setSubmittingPick(true);
       soundEffects.playCorrect();
-      speech.speak(currentItem.displayText, { lang: "en" });
+      speech.speak(spokenText, { lang: "en" });
       setFeedback({ ok: true, msg: `答对啦！${currentItem.displayText} — ${currentItem.zh} (+1⭐)` });
       setDoneCount((c) => c + 1);
       setEarnedStars((s) => s + 1);
@@ -90,29 +112,36 @@ export default function DailyReviewPage() {
         }),
       }).catch(() => undefined);
 
-      setTimeout(() => {
+      nextTimerRef.current = window.setTimeout(() => {
         if (idx + 1 >= items.length) {
           setCompleted(true);
           soundEffects.playCelebrate();
-          loadData();
+          void refreshProfileOnly();
         } else {
           setIdx((i) => i + 1);
           setFeedback(null);
         }
+        setSubmittingPick(false);
+        nextTimerRef.current = null;
       }, 800);
     } else {
+      setSubmittingPick(true);
       soundEffects.playGentleTryAgain();
       setFeedback({ ok: false, msg: `刚才点的是 ${text} 哦，再听一遍声音找找看~` });
-      await fetch("/api/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          itemKey: currentItem.itemKey,
-          itemType: currentItem.itemType,
-          unitId: currentItem.unitId,
-          correct: false,
-        }),
-      }).catch(() => undefined);
+      try {
+        await fetch("/api/review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            itemKey: currentItem.itemKey,
+            itemType: currentItem.itemType,
+            unitId: currentItem.unitId,
+            correct: false,
+          }),
+        }).catch(() => undefined);
+      } finally {
+        setSubmittingPick(false);
+      }
     }
   };
 
@@ -195,7 +224,9 @@ export default function DailyReviewPage() {
               <div className="flex justify-center gap-3">
                 <button
                   type="button"
-                  onClick={() => speech.speak(currentItem.displayText, { lang: "en" })}
+                  onClick={() =>
+                    speech.speak(currentItem.audioText || currentItem.displayText, { lang: "en" })
+                  }
                   className="min-h-[48px] px-5 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold border-b-4 border-emerald-700 flex items-center gap-2"
                 >
                   <Volume2 className="w-5 h-5" />
@@ -203,7 +234,12 @@ export default function DailyReviewPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => speech.speak(currentItem.displayText, { lang: "en", slow: true })}
+                  onClick={() =>
+                    speech.speak(currentItem.audioText || currentItem.displayText, {
+                      lang: "en",
+                      slow: true,
+                    })
+                  }
                   className="min-h-[48px] px-4 rounded-2xl bg-amber-400 hover:bg-amber-500 text-slate-900 font-bold border-b-4 border-amber-600 flex items-center gap-1.5"
                 >
                   <span>🐌 慢速</span>

@@ -4,6 +4,8 @@ import path from "node:path";
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 import { getAudioCacheDir } from "@/db";
 import { normalizeBaseUrl } from "@/lib/ai/provider";
+import { getUrlOrigin } from "@/lib/security/endpoint-guard";
+import { fetchProviderEndpoint } from "@/lib/security/provider-fetch";
 
 export interface TtsParams {
   text: string;
@@ -15,11 +17,18 @@ export interface TtsParams {
   apiBaseUrl?: string;
   apiKey?: string;
   apiModel?: string;
+  skipCache?: boolean;
 }
 
 export type TtsResult =
   | { mode: "audio"; buffer: Buffer; cached: boolean }
   | { mode: "browser"; reason?: string };
+
+const MAX_CACHE_FILES = 500;
+const MAX_CACHE_BYTES = 50 * 1024 * 1024;
+const PRUNE_INTERVAL_MS = 5 * 60 * 1000;
+let lastPruneAt = 0;
+let writesSincePrune = 0;
 
 function sanitizeSsmlText(text: string): string {
   return text
@@ -106,7 +115,7 @@ async function synthesizeOpenAiTts(params: {
     if (params.apiKey.trim()) {
       headers.Authorization = `Bearer ${params.apiKey.trim()}`;
     }
-    const res = await fetch(url, {
+    const res = await fetchProviderEndpoint(url, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -132,6 +141,61 @@ async function synthesizeOpenAiTts(params: {
   }
 }
 
+async function pruneAudioCacheIfNeeded(cacheDir: string): Promise<void> {
+  writesSincePrune += 1;
+  const now = Date.now();
+  if (writesSincePrune < 20 && now - lastPruneAt < PRUNE_INTERVAL_MS) {
+    return;
+  }
+  writesSincePrune = 0;
+  lastPruneAt = now;
+
+  try {
+    const entries = await fs.promises.readdir(cacheDir);
+    const mp3Files = entries.filter((name) => name.endsWith(".mp3"));
+    if (mp3Files.length <= MAX_CACHE_FILES) {
+      const stats = await Promise.all(
+        mp3Files.map(async (name) => {
+          const full = path.join(cacheDir, name);
+          const st = await fs.promises.stat(full).catch(() => null);
+          return st ? { full, size: st.size, mtimeMs: st.mtimeMs } : null;
+        })
+      );
+      const valid = stats.filter((s): s is NonNullable<typeof s> => s !== null);
+      const totalBytes = valid.reduce((sum, s) => sum + s.size, 0);
+      if (totalBytes <= MAX_CACHE_BYTES) return;
+      valid.sort((a, b) => a.mtimeMs - b.mtimeMs);
+      let remaining = totalBytes;
+      for (const item of valid) {
+        if (remaining <= MAX_CACHE_BYTES) break;
+        await fs.promises.unlink(item.full).catch(() => undefined);
+        remaining -= item.size;
+      }
+      return;
+    }
+
+    const stats = await Promise.all(
+      mp3Files.map(async (name) => {
+        const full = path.join(cacheDir, name);
+        const st = await fs.promises.stat(full).catch(() => null);
+        return st ? { full, size: st.size, mtimeMs: st.mtimeMs } : null;
+      })
+    );
+    const valid = stats.filter((s): s is NonNullable<typeof s> => s !== null);
+    valid.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    let totalBytes = valid.reduce((sum, s) => sum + s.size, 0);
+    let count = valid.length;
+    for (const item of valid) {
+      if (count <= MAX_CACHE_FILES && totalBytes <= MAX_CACHE_BYTES) break;
+      await fs.promises.unlink(item.full).catch(() => undefined);
+      count -= 1;
+      totalBytes -= item.size;
+    }
+  } catch {
+    // ignore cleanup failures
+  }
+}
+
 export async function synthesizeSpeech(params: TtsParams): Promise<TtsResult> {
   const cleanText = params.text.trim().slice(0, 400);
   if (!cleanText) {
@@ -147,22 +211,28 @@ export async function synthesizeSpeech(params: TtsParams): Promise<TtsResult> {
       ? params.voiceZh || "zh-CN-XiaoxiaoNeural"
       : params.voiceEn || "en-US-AnaNeural";
   const speed = Number((params.speed || 0.85).toFixed(2));
-  const keyVoice = params.engine === "openai" ? `openai:${params.apiModel || "tts-1"}:${params.lang}` : voice;
+  const originTag = getUrlOrigin(params.apiBaseUrl ?? "") ?? "";
+  const keyVoice =
+    params.engine === "openai"
+      ? `openai:${originTag}:${params.apiModel || "tts-1"}:${params.lang}`
+      : voice;
 
   const hash = crypto
     .createHash("sha256")
     .update(`${params.engine}|${keyVoice}|${speed}|${cleanText}`)
     .digest("hex");
 
-  const cachePath = path.join(getAudioCacheDir(), `${hash}.mp3`);
-  if (fs.existsSync(cachePath)) {
+  const cacheDir = params.skipCache ? null : getAudioCacheDir();
+  const cachePath = cacheDir ? path.join(cacheDir, `${hash}.mp3`) : null;
+
+  if (cachePath) {
     try {
-      const cached = fs.readFileSync(cachePath);
+      const cached = await fs.promises.readFile(cachePath);
       if (cached.length > 64) {
         return { mode: "audio", buffer: cached, cached: true };
       }
     } catch {
-      // continue to synthesize
+      // cache miss or unreadable; continue to synthesize
     }
   }
 
@@ -181,16 +251,18 @@ export async function synthesizeSpeech(params: TtsParams): Promise<TtsResult> {
       buffer = await synthesizeEdgeTts(cleanText, voice, speed);
     }
 
-    try {
-      fs.writeFileSync(cachePath, buffer);
-    } catch {
-      // ignore disk cache write failure
+    if (cacheDir && cachePath) {
+      const tmpPath = `${cachePath}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+      try {
+        await fs.promises.writeFile(tmpPath, buffer);
+        await fs.promises.rename(tmpPath, cachePath);
+        void pruneAudioCacheIfNeeded(cacheDir);
+      } catch {
+        await fs.promises.unlink(tmpPath).catch(() => undefined);
+      }
     }
     return { mode: "audio", buffer, cached: false };
-  } catch (err) {
-    return {
-      mode: "browser",
-      reason: err instanceof Error ? err.message : "tts_unavailable",
-    };
+  } catch {
+    return { mode: "browser", reason: "tts_unavailable" };
   }
 }

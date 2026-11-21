@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { hasSceneKey, hasWordVisualKey } from "@/components/illustrations/visual-keys";
 import { CURRICULUM_LEVELS, L0_UNITS, getAllPhonics, getAllVocab } from "./index";
 
 describe("L0-L2 Curriculum Integrity", () => {
@@ -48,5 +49,19 @@ describe("L0-L2 Curriculum Integrity", () => {
     expect(vocab.length).toBeGreaterThanOrEqual(75);
     expect(new Set(vocab.map((v) => v.id)).size).toBe(vocab.length);
     expect(new Set(phonics.map((p) => p.id)).size).toBe(phonics.length);
+  });
+
+  it("maps every vocab visualKey, phonics sample visualKey, and roleplay sceneKey to built-in artwork", () => {
+    for (const unit of L0_UNITS) {
+      expect(hasSceneKey(unit.roleplay.sceneKey)).toBe(true);
+      for (const card of unit.vocab) {
+        expect(hasWordVisualKey(card.visualKey)).toBe(true);
+      }
+      for (const p of unit.phonics) {
+        for (const sample of p.sampleWords) {
+          expect(hasWordVisualKey(sample.visualKey)).toBe(true);
+        }
+      }
+    }
   });
 });

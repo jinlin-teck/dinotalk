@@ -75,6 +75,7 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
       stt_api_key TEXT NOT NULL DEFAULT '',
       stt_api_model TEXT NOT NULL DEFAULT 'whisper-1',
       parent_pin TEXT NOT NULL DEFAULT '',
+      parent_session_version INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
 
@@ -107,6 +108,8 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS word_mastery_profile_item_idx
       ON word_mastery (profile_id, item_key);
+    CREATE INDEX IF NOT EXISTS word_mastery_profile_review_idx
+      ON word_mastery (profile_id, next_review_at);
 
     CREATE TABLE IF NOT EXISTS chat_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,6 +133,8 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
       suggestions_json TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS chat_messages_session_idx
+      ON chat_messages (session_id);
 
     CREATE TABLE IF NOT EXISTS daily_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,6 +147,15 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
     CREATE UNIQUE INDEX IF NOT EXISTS daily_logs_profile_date_idx
       ON daily_logs (profile_id, date_key);
   `);
+
+  sqlite.transaction(() => {
+    const columns = sqlite.pragma("table_info(app_settings)") as { name: string }[];
+    if (!columns.some((column) => column.name === "parent_session_version")) {
+      sqlite.exec(
+        "ALTER TABLE app_settings ADD COLUMN parent_session_version INTEGER NOT NULL DEFAULT 0"
+      );
+    }
+  }).immediate();
 
   const now = new Date().toISOString();
   const today = todayDateKey();

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { downsampleToMono16k, encodeFloat32ToWavBuffer } from "@/lib/speech/wav-encoder";
+import type { SttEngine } from "@/lib/speech/constants";
 
 function getAudioFilenameForMime(mimeType: string): string {
   const lower = mimeType.toLowerCase();
@@ -71,68 +72,139 @@ interface SpeechRecognitionLike {
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
+  abort: () => void;
 }
 
 export function useSpeech() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [sttError, setSttError] = useState<string | null>(null);
+
+  const mountedRef = useRef(true);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const speakAbortRef = useRef<AbortController | null>(null);
+  const speakSeqRef = useRef(0);
+
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const sttModeRef = useRef<"browser" | "openai" | "minimax">("browser");
+  const sttAbortRef = useRef<AbortController | null>(null);
+  const listenSeqRef = useRef(0);
+  const sttModeRef = useRef<SttEngine>("browser");
 
-  useEffect(() => {
-    fetch("/api/settings")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        const s = data?.settings;
-        if (s?.sttEngine === "minimax" && s?.hasSttApiKey) {
-          sttModeRef.current = "minimax";
-        } else if (s?.sttEngine === "openai" && s?.sttApiBaseUrl) {
-          sttModeRef.current = "openai";
-        } else {
-          sttModeRef.current = "browser";
-        }
-      })
-      .catch(() => undefined);
+  const revokeCurrentAudioUrl = useCallback(() => {
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+  }, []);
 
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
+  const stopSpeaking = useCallback(() => {
+    speakSeqRef.current += 1;
+    if (speakAbortRef.current) {
+      speakAbortRef.current.abort();
+      speakAbortRef.current = null;
+    }
+    if (audioRef.current) {
+      audioRef.current.onended = null;
+      audioRef.current.onerror = null;
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    revokeCurrentAudioUrl();
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    if (mountedRef.current) {
+      setIsSpeaking(false);
+    }
+  }, [revokeCurrentAudioUrl]);
+
+  const cancelListening = useCallback(() => {
+    listenSeqRef.current += 1;
+    sttAbortRef.current?.abort();
+    sttAbortRef.current = null;
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch {
+        // ignore
       }
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-      }
-      if (recognitionRef.current) {
+      recognitionRef.current = null;
+    }
+    if (recorderRef.current) {
+      recorderRef.current.onstop = null;
+      if (recorderRef.current.state !== "inactive") {
         try {
-          recognitionRef.current.stop();
+          recorderRef.current.stop();
         } catch {
           // ignore
         }
       }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-      }
-    };
+      recorderRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
   }, []);
 
-  const stopSpeaking = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
+  const stopListening = useCallback(() => {
+    const recognizer = recognitionRef.current;
+    const recorder = recorderRef.current;
+
+    try {
+      if (recognizer) {
+        recognizer.stop();
+      } else if (recorder?.state === "recording") {
+        recorder.stop();
+      } else if (!recorder) {
+        // Permission may still be pending, with no recording to finish.
+        cancelListening();
+      }
+    } catch {
+      cancelListening();
     }
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+    if (mountedRef.current) {
+      setIsListening(false);
     }
-    setIsSpeaking(false);
+  }, [cancelListening]);
+
+  const refreshSttMode = useCallback(() => {
+    fetch("/api/speech/config")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!mountedRef.current) return;
+        const mode = data?.sttMode;
+        if (mode === "minimax" || mode === "openai" || mode === "browser") {
+          sttModeRef.current = mode;
+        }
+      })
+      .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    refreshSttMode();
+
+    // 家长在另一个标签页改完语音配置后，孩子切回本页即可生效。
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshSttMode();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      mountedRef.current = false;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      stopSpeaking();
+      cancelListening();
+    };
+  }, [cancelListening, refreshSttMode, stopSpeaking]);
 
   const speakWithBrowser = useCallback((text: string, lang: "en" | "zh", slow: boolean) => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      setIsSpeaking(false);
+    if (!mountedRef.current || typeof window === "undefined" || !("speechSynthesis" in window)) {
+      if (mountedRef.current) setIsSpeaking(false);
       return;
     }
     try {
@@ -141,11 +213,15 @@ export function useSpeech() {
       utter.lang = lang === "zh" ? "zh-CN" : "en-US";
       utter.rate = slow ? 0.7 : 0.92;
       utter.pitch = 1.08;
-      utter.onend = () => setIsSpeaking(false);
-      utter.onerror = () => setIsSpeaking(false);
+      utter.onend = () => {
+        if (mountedRef.current) setIsSpeaking(false);
+      };
+      utter.onerror = () => {
+        if (mountedRef.current) setIsSpeaking(false);
+      };
       window.speechSynthesis.speak(utter);
     } catch {
-      setIsSpeaking(false);
+      if (mountedRef.current) setIsSpeaking(false);
     }
   }, []);
 
@@ -157,7 +233,10 @@ export function useSpeech() {
       const slow = Boolean(options.slow);
 
       stopSpeaking();
-      setIsSpeaking(true);
+      const seq = ++speakSeqRef.current;
+      const controller = new AbortController();
+      speakAbortRef.current = controller;
+      if (mountedRef.current) setIsSpeaking(true);
 
       try {
         const res = await fetch("/api/speech/tts", {
@@ -168,58 +247,62 @@ export function useSpeech() {
             lang,
             speed: slow ? 0.68 : undefined,
           }),
+          signal: controller.signal,
         });
+
+        if (!mountedRef.current || seq !== speakSeqRef.current) return;
 
         const contentType = res.headers.get("content-type") || "";
         if (res.ok && contentType.includes("audio")) {
           const blob = await res.blob();
+          if (!mountedRef.current || seq !== speakSeqRef.current) return;
+
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
+          audioUrlRef.current = url;
           audioRef.current = audio;
           audio.onended = () => {
-            URL.revokeObjectURL(url);
-            setIsSpeaking(false);
+            if (audioUrlRef.current === url) revokeCurrentAudioUrl();
+            if (audioRef.current === audio) audioRef.current = null;
+            if (mountedRef.current && seq === speakSeqRef.current) setIsSpeaking(false);
           };
           audio.onerror = () => {
-            URL.revokeObjectURL(url);
-            speakWithBrowser(clean, lang, slow);
+            if (audioUrlRef.current === url) revokeCurrentAudioUrl();
+            if (audioRef.current === audio) audioRef.current = null;
+            if (mountedRef.current && seq === speakSeqRef.current) {
+              speakWithBrowser(clean, lang, slow);
+            }
           };
           await audio.play().catch(() => {
-            URL.revokeObjectURL(url);
-            speakWithBrowser(clean, lang, slow);
+            if (audioUrlRef.current === url) revokeCurrentAudioUrl();
+            if (audioRef.current === audio) audioRef.current = null;
+            if (mountedRef.current && seq === speakSeqRef.current) {
+              speakWithBrowser(clean, lang, slow);
+            }
           });
           return;
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          return;
+        }
         // Silent downgrade to browser speech synthesis
+      } finally {
+        if (speakAbortRef.current === controller) {
+          speakAbortRef.current = null;
+        }
       }
 
+      if (!mountedRef.current || seq !== speakSeqRef.current) return;
       speakWithBrowser(clean, lang, slow);
     },
-    [speakWithBrowser, stopSpeaking]
+    [revokeCurrentAudioUrl, speakWithBrowser, stopSpeaking]
   );
 
-  const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch {
-        // ignore
-      }
-      recognitionRef.current = null;
-    }
-    if (recorderRef.current && recorderRef.current.state !== "inactive") {
-      try {
-        recorderRef.current.stop();
-      } catch {
-        // ignore
-      }
-    }
-    setIsListening(false);
-  }, []);
-
   const startBrowserRecognition = useCallback(
-    (onTranscript: (text: string) => void) => {
+    (seq: number, onTranscript: (text: string) => void) => {
+      if (!mountedRef.current || seq !== listenSeqRef.current) return;
+
       const win = window as unknown as {
         SpeechRecognition?: new () => SpeechRecognitionLike;
         webkitSpeechRecognition?: new () => SpeechRecognitionLike;
@@ -246,6 +329,7 @@ export function useSpeech() {
           }
         };
         rec.onerror = (ev) => {
+          if (!mountedRef.current || seq !== listenSeqRef.current) return;
           setIsListening(false);
           if (ev?.error === "not-allowed") {
             setSttError("麦克风权限未打开，请在浏览器允许使用麦克风，或直接点下方卡片练习~");
@@ -254,8 +338,9 @@ export function useSpeech() {
           }
         };
         rec.onend = () => {
+          if (recognitionRef.current === rec) recognitionRef.current = null;
+          if (!mountedRef.current || seq !== listenSeqRef.current) return;
           setIsListening(false);
-          recognitionRef.current = null;
           if (captured) {
             onTranscript(captured);
           }
@@ -263,8 +348,11 @@ export function useSpeech() {
         recognitionRef.current = rec;
         rec.start();
       } catch {
-        setIsListening(false);
-        setSttError("启动麦克风失败，可以直接点击提示气泡完成开口练习哦~");
+        recognitionRef.current = null;
+        if (mountedRef.current && seq === listenSeqRef.current) {
+          setIsListening(false);
+          setSttError("启动麦克风失败，可以直接点击提示气泡完成开口练习哦~");
+        }
       }
     },
     []
@@ -273,15 +361,25 @@ export function useSpeech() {
   const startListening = useCallback(
     async (hints: string, onTranscript: (text: string) => void) => {
       if (typeof window === "undefined") return;
-      setSttError(null);
       stopSpeaking();
+      cancelListening();
+
+      const seq = ++listenSeqRef.current;
+      setSttError(null);
       setIsListening(true);
 
       const useCloudStt = sttModeRef.current === "openai" || sttModeRef.current === "minimax";
       if (useCloudStt && typeof MediaRecorder !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+        let pendingStream: MediaStream | undefined;
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          if (!mountedRef.current || seq !== listenSeqRef.current) {
+            stream.getTracks().forEach((t) => t.stop());
+            return;
+          }
+
           streamRef.current = stream;
+          pendingStream = stream;
           const chunks: BlobPart[] = [];
           const preferredMimes = [
             "audio/webm;codecs=opus",
@@ -291,7 +389,9 @@ export function useSpeech() {
           ];
           const mimeType =
             preferredMimes.find((m) => MediaRecorder.isTypeSupported(m)) || "";
-          const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+          const recorder = mimeType
+            ? new MediaRecorder(stream, { mimeType })
+            : new MediaRecorder(stream);
           recorderRef.current = recorder;
 
           recorder.ondataavailable = (ev) => {
@@ -299,9 +399,11 @@ export function useSpeech() {
           };
 
           recorder.onstop = async () => {
+            const isCurrent = () => mountedRef.current && seq === listenSeqRef.current;
             stream.getTracks().forEach((t) => t.stop());
-            streamRef.current = null;
-            recorderRef.current = null;
+            if (streamRef.current === stream) streamRef.current = null;
+            if (recorderRef.current === recorder) recorderRef.current = null;
+            if (!isCurrent()) return;
             setIsListening(false);
 
             const recordedMime = recorder.mimeType || mimeType || "audio/webm";
@@ -310,41 +412,60 @@ export function useSpeech() {
               setSttError("录音时间太短啦，按住多说一秒试试吧~");
               return;
             }
-            const prepared = await convertBlobToWav(rawBlob);
-            const form = new FormData();
-            form.append("audio", prepared.blob, prepared.filename);
-            form.append("hints", hints);
-
+            const controller = new AbortController();
+            sttAbortRef.current = controller;
             try {
-              const res = await fetch("/api/speech/stt", { method: "POST", body: form });
+              const prepared = await convertBlobToWav(rawBlob);
+              if (!isCurrent()) return;
+              const form = new FormData();
+              form.append("audio", prepared.blob, prepared.filename);
+              form.append("hints", hints);
+              const res = await fetch("/api/speech/stt", {
+                method: "POST",
+                body: form,
+                signal: controller.signal,
+              });
               const data = await res.json();
+              if (!isCurrent()) return;
               if (data?.ok && data?.text) {
                 onTranscript(data.text);
               } else {
                 setSttError(data?.error || "语音识别没听清，点提示气泡也能直接练习哦~");
               }
             } catch {
-              setSttError("语音识别网络开小差了，可以直接点下方提示卡片继续哦~");
+              if (isCurrent()) {
+                setSttError("语音识别网络开小差了，可以直接点下方提示卡片继续哦~");
+              }
+            } finally {
+              if (sttAbortRef.current === controller) sttAbortRef.current = null;
             }
           };
 
           recorder.start();
           return;
         } catch {
+          if (pendingStream && streamRef.current === pendingStream) {
+            pendingStream.getTracks().forEach((t) => t.stop());
+            streamRef.current = null;
+            recorderRef.current = null;
+          }
+          if (!mountedRef.current || seq !== listenSeqRef.current) return;
           // Fall back to browser SpeechRecognition if MediaRecorder fails
         }
       }
 
-      startBrowserRecognition(onTranscript);
+      startBrowserRecognition(seq, onTranscript);
     },
-    [startBrowserRecognition, stopSpeaking]
+    [cancelListening, startBrowserRecognition, stopSpeaking]
   );
+
+  const clearSttError = useCallback(() => setSttError(null), []);
 
   return {
     isSpeaking,
     isListening,
     sttError,
-    clearSttError: () => setSttError(null),
+    clearSttError,
     speak,
     stopSpeaking,
     startListening,

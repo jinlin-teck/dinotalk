@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, BookOpen, Gamepad2, MessageSquareHeart, Sparkles } from "lucide-react";
 import { getUnitById } from "@/data/curriculum";
 import { AppShell, type ProfileSummary } from "@/components/AppShell";
@@ -36,8 +36,17 @@ export default function UnitLearningPage({
   const [dueReviewCount, setDueReviewCount] = useState(0);
   const [unitProg, setUnitProg] = useState<UnitProgressRow | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   const speech = useSpeech();
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   const loadProfileAndProgress = useCallback(async () => {
     try {
@@ -76,7 +85,7 @@ export default function UnitLearningPage({
     );
   }
 
-  const completeStep = async (step: StepKey, score?: number) => {
+  const completeStep = async (step: Exclude<StepKey, "roleplay">, score?: number) => {
     try {
       const res = await fetch("/api/progress", {
         method: "POST",
@@ -88,7 +97,13 @@ export default function UnitLearningPage({
         setUnitProg(data.unitProgress);
         if (data.profile) setProfile(data.profile);
         setToastMsg(`太棒啦！完成环节获得 +${data.starsAwarded} 颗星星 ⭐`);
-        setTimeout(() => setToastMsg(null), 3200);
+        if (toastTimerRef.current !== null) {
+          window.clearTimeout(toastTimerRef.current);
+        }
+        toastTimerRef.current = window.setTimeout(() => {
+          setToastMsg(null);
+          toastTimerRef.current = null;
+        }, 3200);
       }
     } catch {
       // ignore
@@ -193,6 +208,7 @@ export default function UnitLearningPage({
         {/* Active Step Content */}
         {activeStep === "story" && (
           <StoryCardsTab
+            key={`story-${unit.id}`}
             unit={unit}
             isDone={unitProg?.storyDone === 1}
             onComplete={() => completeStep("story")}
@@ -206,6 +222,7 @@ export default function UnitLearningPage({
 
         {activeStep === "phonics" && (
           <PhonicsTab
+            key={`phonics-${unit.id}`}
             unit={unit}
             isDone={unitProg?.phonicsDone === 1}
             onComplete={() => completeStep("phonics")}
@@ -215,6 +232,7 @@ export default function UnitLearningPage({
 
         {activeStep === "game" && (
           <MiniGamesTab
+            key={`game-${unit.id}`}
             unit={unit}
             isDone={unitProg?.gameDone === 1}
             onComplete={(score) => completeStep("game", score)}
@@ -224,6 +242,7 @@ export default function UnitLearningPage({
 
         {activeStep === "roleplay" && (
           <RoleplayStageTab
+            key={`roleplay-${unit.id}`}
             unit={unit}
             equippedAccessories={profile?.equippedAccessories ?? []}
             speak={speech.speak}

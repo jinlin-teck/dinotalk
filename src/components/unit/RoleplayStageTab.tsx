@@ -94,40 +94,42 @@ export function RoleplayStageTab({
           unitId: unit.id,
           sessionId,
           userText: clean,
-          completedGoalIds,
         }),
       });
-      const data = await res.json();
-      if (data?.sessionId) setSessionId(data.sessionId);
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.response) {
+        throw new Error(data?.error || "roleplay_failed");
+      }
+      if (data.sessionId) setSessionId(data.sessionId);
 
-      const resp = data?.response;
-      if (resp) {
-        setMood(resp.emotion || "happy");
-        setCompletedGoalIds(resp.completedGoalIds || []);
-        setSuggestions(resp.nextSuggestions || []);
-        setUsedFallback(Boolean(data.usedFallback));
+      const resp = data.response;
+      setMood(resp.emotion || "happy");
+      setCompletedGoalIds(resp.completedGoalIds || []);
+      setSuggestions(resp.nextSuggestions || []);
+      setUsedFallback(Boolean(data.usedFallback));
 
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `a-${Date.now()}`,
-            role: "assistant",
-            englishText: resp.englishReply,
-            chineseText: resp.chineseHint,
-            praise: resp.praise,
-          },
-        ]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: "assistant",
+          englishText: resp.englishReply,
+          chineseText: resp.chineseHint,
+          praise: resp.praise,
+        },
+      ]);
 
-        speak(resp.englishReply, { lang: "en" });
+      speak(resp.englishReply, { lang: "en" });
 
-        if (resp.isSceneComplete) {
-          setSceneComplete(true);
-          setStarsEarned(data.starsAwarded || 4);
-          soundEffects.playCelebrate();
-          await onStarsUpdated();
-        } else if ((resp.completedGoalIds?.length ?? 0) > completedGoalIds.length) {
-          soundEffects.playStar();
+      if (resp.isSceneComplete) {
+        setSceneComplete(true);
+        if (typeof data.starsAwarded === "number" && data.starsAwarded > 0) {
+          setStarsEarned(data.starsAwarded);
         }
+        soundEffects.playCelebrate();
+        await onStarsUpdated();
+      } else if ((resp.completedGoalIds?.length ?? 0) > completedGoalIds.length) {
+        soundEffects.playStar();
       }
     } catch {
       setMood("happy");
@@ -188,8 +190,13 @@ export function RoleplayStageTab({
         </div>
 
         {/* 3 Scene Goals Tracker */}
-        <div className="p-4 pt-5 bg-white">
-          <div className="text-xs font-bold text-slate-500 mb-2">
+        <div className="p-4 pt-5 bg-white space-y-2.5">
+          {unit.roleplay.introZh && (
+            <p className="text-xs sm:text-sm text-slate-600 font-medium leading-relaxed">
+              {unit.roleplay.introZh}
+            </p>
+          )}
+          <div className="text-xs font-bold text-slate-500">
             本剧场 3 个小任务（完成 {completedGoalIds.length} / {unit.roleplay.goals.length}）：
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -362,6 +369,7 @@ export function RoleplayStageTab({
         >
           <input
             type="text"
+            maxLength={300}
             value={textDraft}
             onChange={(e) => setTextDraft(e.target.value)}
             placeholder="也可以输入英文或中文问 Dino..."

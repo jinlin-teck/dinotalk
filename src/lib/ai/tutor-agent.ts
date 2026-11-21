@@ -1,6 +1,14 @@
 import { z } from "zod";
 import type { EmotionMood, SuggestionChip, UnitDef } from "@/data/curriculum/types";
-import { callChatCompletion, isLlmConfigured, type ChatMessageParam, type LlmConfig } from "./provider";
+import {
+  callChatCompletion,
+  isLlmConfigured,
+  LlmProviderError,
+  stripReasoningTags,
+  type ChatMessageParam,
+  type LlmConfig,
+  type ProviderErrorCode,
+} from "./provider";
 import { runFallbackFreeTalkTurn, runFallbackRoleplayTurn, type TutorResponse } from "./fallback-agent";
 
 const SuggestionSchema = z.object({
@@ -26,8 +34,8 @@ const RawTutorResponseSchema = z.object({
 export type { TutorResponse };
 
 function stripThinkingAndMarkdown(raw: string): string {
-  // Remove <think>...</think> reasoning blocks emitted by some reasoning models
-  let cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  // Remove <think>...</think> and <thought>...</thought> reasoning blocks emitted by reasoning models
+  let cleaned = stripReasoningTags(raw);
   // Strip ```json ... ``` or ``` ... ``` fences
   const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenceMatch && fenceMatch[1]) {
@@ -65,7 +73,7 @@ export function parseAgentJson(
     : [];
 
   const isComplete = unit
-    ? validated.isSceneComplete || finalGoalIds.length >= unit.roleplay.goals.length
+    ? finalGoalIds.length >= unit.roleplay.goals.length
     : false;
 
   const fallbackSuggestions: SuggestionChip[] = unit
@@ -141,7 +149,7 @@ ${goalsText}
 export interface AgentTurnResult {
   response: TutorResponse;
   usedFallback: boolean;
-  fallbackReason?: string;
+  fallbackReason?: ProviderErrorCode | "invalid_response";
 }
 
 export async function runRoleplayTurn(params: {
@@ -181,8 +189,8 @@ export async function runRoleplayTurn(params: {
   try {
     const raw = await callChatCompletion(config, messages, {
       jsonMode: true,
-      maxTokens: 420,
-      timeoutMs: 22000,
+      maxTokens: 1200,
+      timeoutMs: 30000,
     });
     const parsed = parseAgentJson(raw, unit, completedGoalIds);
     return {
@@ -190,11 +198,10 @@ export async function runRoleplayTurn(params: {
       usedFallback: false,
     };
   } catch (err) {
-    const reason = err instanceof Error ? err.message : "llm_error";
     return {
       response: runFallbackRoleplayTurn(unit, userText, completedGoalIds),
       usedFallback: true,
-      fallbackReason: reason,
+      fallbackReason: err instanceof LlmProviderError ? err.code : "invalid_response",
     };
   }
 }
@@ -247,8 +254,8 @@ export async function runFreeTalkTurn(params: {
   try {
     const raw = await callChatCompletion(config, messages, {
       jsonMode: true,
-      maxTokens: 380,
-      timeoutMs: 22000,
+      maxTokens: 1000,
+      timeoutMs: 30000,
     });
     const parsed = parseAgentJson(raw, null, []);
     return {
@@ -256,11 +263,10 @@ export async function runFreeTalkTurn(params: {
       usedFallback: false,
     };
   } catch (err) {
-    const reason = err instanceof Error ? err.message : "llm_error";
     return {
       response: runFallbackFreeTalkTurn(userText),
       usedFallback: true,
-      fallbackReason: reason,
+      fallbackReason: err instanceof LlmProviderError ? err.code : "invalid_response",
     };
   }
 }

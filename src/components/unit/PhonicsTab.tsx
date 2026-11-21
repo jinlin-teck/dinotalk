@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Sparkles, Volume2 } from "lucide-react";
 import type { UnitDef } from "@/data/curriculum/types";
 import { WordVisual } from "@/components/illustrations/WordVisual";
@@ -18,7 +18,17 @@ export function PhonicsTab({ unit, isDone, onComplete, speak }: PhonicsTabProps)
   const [quizIdx, setQuizIdx] = useState(0);
   const [quizFeedback, setQuizFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
   const [quizCleared, setQuizCleared] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const quizTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (quizTimerRef.current !== null) {
+        window.clearTimeout(quizTimerRef.current);
+      }
+    };
+  }, []);
 
   const activeItem = unit.phonics[selectedIdx] ?? unit.phonics[0];
 
@@ -41,7 +51,7 @@ export function PhonicsTab({ unit, isDone, onComplete, speak }: PhonicsTabProps)
   const currentQuiz = quizQuestions[quizIdx];
 
   const handleQuizPick = (pickedId: string) => {
-    if (!currentQuiz) return;
+    if (!currentQuiz || quizCleared || advancing) return;
     if (pickedId === currentQuiz.target.id) {
       soundEffects.playCorrect();
       if (quizIdx + 1 >= quizQuestions.length) {
@@ -51,13 +61,16 @@ export function PhonicsTab({ unit, isDone, onComplete, speak }: PhonicsTabProps)
           msg: "太棒啦！全部拼读小测验答对，耳朵真灵！",
         });
       } else {
+        setAdvancing(true);
         setQuizFeedback({
           ok: true,
           msg: `答对啦！就是 ${currentQuiz.target.letter} (${currentQuiz.target.soundLabel})！进入下一题~`,
         });
-        setTimeout(() => {
+        quizTimerRef.current = window.setTimeout(() => {
           setQuizIdx((i) => i + 1);
           setQuizFeedback(null);
+          setAdvancing(false);
+          quizTimerRef.current = null;
         }, 700);
       }
     } else {
@@ -159,16 +172,23 @@ export function PhonicsTab({ unit, isDone, onComplete, speak }: PhonicsTabProps)
                   <WordVisual visualKey={sw.visualKey} size="sm" />
                   <div className="flex-1 min-w-0">
                     <div className="text-xl font-black text-slate-900">
-                      {sw.word.toLowerCase().startsWith(sw.highlight.toLowerCase()) ? (
-                        <>
-                          <span className="text-orange-500">
-                            {sw.word.slice(0, sw.highlight.length)}
-                          </span>
-                          <span>{sw.word.slice(sw.highlight.length)}</span>
-                        </>
-                      ) : (
-                        sw.word
-                      )}
+                      {(() => {
+                        const hl = sw.highlight;
+                        const matchIdx = hl
+                          ? sw.word.toLowerCase().indexOf(hl.toLowerCase())
+                          : -1;
+                        if (matchIdx === -1) return sw.word;
+                        const before = sw.word.slice(0, matchIdx);
+                        const middle = sw.word.slice(matchIdx, matchIdx + hl.length);
+                        const after = sw.word.slice(matchIdx + hl.length);
+                        return (
+                          <>
+                            <span>{before}</span>
+                            <span className="text-orange-500">{middle}</span>
+                            <span>{after}</span>
+                          </>
+                        );
+                      })()}
                     </div>
                     <div className="text-sm font-bold text-slate-600">{sw.zh}</div>
                   </div>
@@ -210,7 +230,7 @@ export function PhonicsTab({ unit, isDone, onComplete, speak }: PhonicsTabProps)
               <button
                 key={opt.id}
                 type="button"
-                disabled={quizCleared}
+                disabled={quizCleared || advancing}
                 onClick={() => handleQuizPick(opt.id)}
                 className="min-h-[72px] rounded-2xl bg-white hover:bg-amber-50 border-2 border-sky-200 border-b-4 font-black text-2xl text-slate-800 transition active:translate-y-0.5"
               >

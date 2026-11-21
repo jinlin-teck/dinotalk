@@ -3,10 +3,20 @@ services:
     build: .
     container_name: dinotalk-app
     restart: unless-stopped
+    user: "${DINOTALK_UID:-1000}:${DINOTALK_GID:-1000}"
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=production
       - DATA_DIR=/app/data
+      - DINOTALK_DATA_OWNER=${DINOTALK_UID:-1000}:${DINOTALK_GID:-1000}
+      - ALLOWED_ENDPOINT_HOSTS=${ALLOWED_ENDPOINT_HOSTS:-}
+      - BLOCK_PRIVATE_ENDPOINTS=${BLOCK_PRIVATE_ENDPOINTS:-0}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-}
+      - SESSION_SECRET=${SESSION_SECRET:-}
     volumes:
-      - ./data:/app/data
+      - type: bind
+        source: ./data
+        target: /app/data
+        bind:
+          create_host_path: false

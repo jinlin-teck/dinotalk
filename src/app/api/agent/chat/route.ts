@@ -7,13 +7,18 @@ import {
   chatMessages,
   chatSessions,
   childProfiles,
-  dailyLogs,
   unitProgress,
-  wordMastery,
 } from "@/db/schema";
 import { getUnitById } from "@/data/curriculum";
 import { runRoleplayTurn } from "@/lib/ai/tutor-agent";
-import { calculateNextReview } from "@/lib/srs";
+import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
+import {
+  addDailyLogStats,
+  awardStarsAndMood,
+  DEFAULT_PROFILE_ID,
+  parseJsonStringArray,
+  upsertWordMasteryItem,
+} from "@/lib/services/learning-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,10 +27,12 @@ const ChatRequestSchema = z.object({
   unitId: z.string().min(1),
   sessionId: z.number().int().positive().optional(),
   userText: z.string().min(1).max(300),
-  completedGoalIds: z.array(z.string()).optional(),
 });
 
 export async function POST(request: Request) {
+  const originError = assertJsonSameOrigin(request);
+  if (originError) return originError;
+
   const body = await request.json().catch(() => null);
   const parsed = ChatRequestSchema.safeParse(body);
   if (!parsed.success) {
@@ -39,13 +46,17 @@ export async function POST(request: Request) {
   }
 
   const db = getDb();
-  const profile = db.select().from(childProfiles).where(eq(childProfiles.id, 1)).get()!;
+  const profile = db
+    .select()
+    .from(childProfiles)
+    .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+    .get()!;
   const settings = db.select().from(appSettings).where(eq(appSettings.id, 1)).get()!;
-  const now = new Date();
-  const nowIso = now.toISOString();
 
+  const validGoalIds = new Set(unit.roleplay.goals.map((g) => g.id));
   let sessionId = parsed.data.sessionId;
-  let completedGoals: string[] = parsed.data.completedGoalIds ?? [];
+  let initialCompletedGoals: string[] = [];
+  let historyRows: Array<{ role: "assistant" | "user"; englishText: string }> = [];
 
   if (sessionId) {
     const existingSession = db
@@ -54,55 +65,28 @@ export async function POST(request: Request) {
       .where(eq(chatSessions.id, sessionId))
       .get();
     if (existingSession) {
-      try {
-        const stored = JSON.parse(existingSession.completedGoalsJson);
-        if (Array.isArray(stored)) {
-          completedGoals = Array.from(new Set([...completedGoals, ...stored]));
-        }
-      } catch {
-        // ignore parse errors
+      if (existingSession.unitId !== unitId || existingSession.mode !== "roleplay") {
+        return NextResponse.json({ error: "对话会话与当前关卡不匹配" }, { status: 400 });
       }
+      initialCompletedGoals = parseJsonStringArray(existingSession.completedGoalsJson).filter(
+        (id) => validGoalIds.has(id)
+      );
+      const rows = db
+        .select()
+        .from(chatMessages)
+        .where(eq(chatMessages.sessionId, sessionId))
+        .orderBy(asc(chatMessages.id))
+        .all();
+      historyRows = rows.map((r) => ({
+        role: r.role === "user" ? "user" : "assistant",
+        englishText: r.englishText,
+      }));
     } else {
       sessionId = undefined;
     }
+  } else {
+    historyRows = [{ role: "assistant", englishText: unit.roleplay.openingEn }];
   }
-
-  if (!sessionId) {
-    const insertRes = db
-      .insert(chatSessions)
-      .values({
-        profileId: 1,
-        unitId,
-        mode: "roleplay",
-        completedGoalsJson: JSON.stringify(completedGoals),
-        summaryZh: `${unit.titleZh}情景练习`,
-        starsEarned: 0,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      })
-      .run();
-    sessionId = Number(insertRes.lastInsertRowid);
-
-    // Seed opening assistant turn for report history clarity
-    db.insert(chatMessages)
-      .values({
-        sessionId,
-        role: "assistant",
-        englishText: unit.roleplay.openingEn,
-        chineseText: unit.roleplay.openingZh,
-        emotion: "happy",
-        suggestionsJson: JSON.stringify(unit.roleplay.openingSuggestions),
-        createdAt: nowIso,
-      })
-      .run();
-  }
-
-  const historyRows = db
-    .select()
-    .from(chatMessages)
-    .where(eq(chatMessages.sessionId, sessionId))
-    .orderBy(asc(chatMessages.id))
-    .all();
 
   const agentResult = await runRoleplayTurn({
     config: {
@@ -115,167 +99,188 @@ export async function POST(request: Request) {
     unit,
     childNickname: profile.nickname,
     companionName: profile.companionName,
-    history: historyRows.map((r) => ({
-      role: r.role === "user" ? "user" : "assistant",
-      englishText: r.englishText,
-    })),
+    history: historyRows,
     userText,
-    completedGoalIds: completedGoals,
+    completedGoalIds: initialCompletedGoals,
   });
 
   const resp = agentResult.response;
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const today = todayDateKey(now);
 
-  // Save user & assistant messages
-  db.insert(chatMessages)
-    .values({
-      sessionId,
-      role: "user",
-      englishText: userText.trim(),
-      chineseText: "",
-      emotion: "happy",
-      suggestionsJson: "[]",
-      createdAt: nowIso,
-    })
-    .run();
+  const txResult = db.transaction((tx) => {
+    let activeSessionId = sessionId;
+    let existingSession = activeSessionId
+      ? tx.select().from(chatSessions).where(eq(chatSessions.id, activeSessionId)).get()
+      : undefined;
 
-  db.insert(chatMessages)
-    .values({
-      sessionId,
-      role: "assistant",
-      englishText: resp.englishReply,
-      chineseText: resp.chineseHint,
-      emotion: resp.emotion,
-      suggestionsJson: JSON.stringify(resp.nextSuggestions),
-      createdAt: nowIso,
-    })
-    .run();
-
-  // Update word mastery for words mastered in conversation
-  for (const w of resp.masteredWords) {
-    const card = unit.vocab.find((v) => v.word.toLowerCase() === w.toLowerCase());
-    if (!card) continue;
-    const existing = db
-      .select()
-      .from(wordMastery)
-      .where(and(eq(wordMastery.profileId, 1), eq(wordMastery.itemKey, card.id)))
-      .get();
-    const srs = calculateNextReview(existing?.masteryLevel ?? 0, true, now);
-    if (existing) {
-      db.update(wordMastery)
-        .set({
-          masteryLevel: srs.masteryLevel,
-          correctCount: existing.correctCount + 1,
-          nextReviewAt: srs.nextReviewAt,
-          lastPracticedAt: nowIso,
-        })
-        .where(eq(wordMastery.id, existing.id))
-        .run();
-    } else {
-      db.insert(wordMastery)
+    if (!existingSession) {
+      const insertRes = tx
+        .insert(chatSessions)
         .values({
-          profileId: 1,
-          itemKey: card.id,
-          itemType: "word",
+          profileId: DEFAULT_PROFILE_ID,
           unitId,
-          masteryLevel: srs.masteryLevel,
-          correctCount: 1,
-          wrongCount: 0,
-          nextReviewAt: srs.nextReviewAt,
-          lastPracticedAt: nowIso,
-        })
-        .run();
-    }
-  }
-
-  let starsAwarded = 0;
-  if (resp.isSceneComplete) {
-    const prog = db
-      .select()
-      .from(unitProgress)
-      .where(and(eq(unitProgress.profileId, 1), eq(unitProgress.unitId, unitId)))
-      .get();
-    const alreadyRoleplayDone = prog?.roleplayDone === 1;
-    starsAwarded = alreadyRoleplayDone ? 1 : 4;
-
-    if (prog) {
-      const nextStarsCount =
-        prog.storyDone + prog.phonicsDone + prog.gameDone + 1;
-      db.update(unitProgress)
-        .set({
-          roleplayDone: 1,
-          starsEarned: nextStarsCount,
-          updatedAt: nowIso,
-        })
-        .where(eq(unitProgress.id, prog.id))
-        .run();
-    } else {
-      db.insert(unitProgress)
-        .values({
-          profileId: 1,
-          unitId,
-          storyDone: 0,
-          phonicsDone: 0,
-          gameDone: 0,
-          roleplayDone: 1,
-          starsEarned: 1,
-          bestGameScore: 0,
+          mode: "roleplay",
+          completedGoalsJson: "[]",
+          summaryZh: `${unit.titleZh}情景练习`,
+          starsEarned: 0,
+          createdAt: nowIso,
           updatedAt: nowIso,
         })
         .run();
+      activeSessionId = Number(insertRes.lastInsertRowid);
+
+      // Seed opening assistant turn for report history clarity
+      tx.insert(chatMessages)
+        .values({
+          sessionId: activeSessionId,
+          role: "assistant",
+          englishText: unit.roleplay.openingEn,
+          chineseText: unit.roleplay.openingZh,
+          emotion: "happy",
+          suggestionsJson: JSON.stringify(unit.roleplay.openingSuggestions),
+          createdAt: nowIso,
+        })
+        .run();
+
+      existingSession = tx
+        .select()
+        .from(chatSessions)
+        .where(eq(chatSessions.id, activeSessionId))
+        .get()!;
     }
 
-    db.update(childProfiles)
+    const storedGoals = parseJsonStringArray(existingSession.completedGoalsJson).filter((id) =>
+      validGoalIds.has(id)
+    );
+    const mergedGoalSet = new Set([...storedGoals, ...resp.completedGoalIds]);
+    const finalCompletedGoals = unit.roleplay.goals
+      .filter((g) => mergedGoalSet.has(g.id))
+      .map((g) => g.id);
+    const authoritativeComplete =
+      finalCompletedGoals.length >= unit.roleplay.goals.length;
+
+    tx.insert(chatMessages)
+      .values({
+        sessionId: activeSessionId!,
+        role: "user",
+        englishText: userText.trim(),
+        chineseText: "",
+        emotion: "happy",
+        suggestionsJson: "[]",
+        createdAt: nowIso,
+      })
+      .run();
+
+    tx.insert(chatMessages)
+      .values({
+        sessionId: activeSessionId!,
+        role: "assistant",
+        englishText: resp.englishReply,
+        chineseText: resp.chineseHint,
+        emotion: resp.emotion,
+        suggestionsJson: JSON.stringify(resp.nextSuggestions),
+        createdAt: nowIso,
+      })
+      .run();
+
+    // Update word mastery for words mastered in conversation
+    for (const w of resp.masteredWords) {
+      const card = unit.vocab.find((v) => v.word.toLowerCase() === w.toLowerCase());
+      if (!card) continue;
+      upsertWordMasteryItem(tx, {
+        itemKey: card.id,
+        itemType: "word",
+        unitId,
+        correct: true,
+        now,
+      });
+    }
+
+    let starsAwarded = 0;
+    const alreadyRewardedInSession = existingSession.starsEarned > 0;
+
+    if (authoritativeComplete && !alreadyRewardedInSession) {
+      const prog = tx
+        .select()
+        .from(unitProgress)
+        .where(
+          and(eq(unitProgress.profileId, DEFAULT_PROFILE_ID), eq(unitProgress.unitId, unitId))
+        )
+        .get();
+      const alreadyRoleplayDone = prog?.roleplayDone === 1;
+      starsAwarded = alreadyRoleplayDone ? 1 : 4;
+
+      if (prog) {
+        const nextStarsCount = prog.storyDone + prog.phonicsDone + prog.gameDone + 1;
+        tx.update(unitProgress)
+          .set({
+            roleplayDone: 1,
+            starsEarned: nextStarsCount,
+            updatedAt: nowIso,
+          })
+          .where(eq(unitProgress.id, prog.id))
+          .run();
+      } else {
+        tx.insert(unitProgress)
+          .values({
+            profileId: DEFAULT_PROFILE_ID,
+            unitId,
+            storyDone: 0,
+            phonicsDone: 0,
+            gameDone: 0,
+            roleplayDone: 1,
+            starsEarned: 1,
+            bestGameScore: 0,
+            updatedAt: nowIso,
+          })
+          .run();
+      }
+
+      awardStarsAndMood(tx, {
+        starsDelta: starsAwarded,
+        moodDelta: 8,
+        nowIso,
+      });
+    }
+
+    tx.update(chatSessions)
       .set({
-        totalStars: profile.totalStars + starsAwarded,
-        petMood: Math.min(100, profile.petMood + 8),
+        completedGoalsJson: JSON.stringify(finalCompletedGoals),
+        summaryZh: `${unit.titleZh} · 已达成 ${finalCompletedGoals.length}/${unit.roleplay.goals.length} 个小目标`,
+        starsEarned:
+          starsAwarded > 0 ? existingSession.starsEarned + starsAwarded : existingSession.starsEarned,
         updatedAt: nowIso,
       })
-      .where(eq(childProfiles.id, 1))
+      .where(eq(chatSessions.id, activeSessionId!))
       .run();
-  }
 
-  db.update(chatSessions)
-    .set({
-      completedGoalsJson: JSON.stringify(resp.completedGoalIds),
-      summaryZh: `${unit.titleZh} · 已达成 ${resp.completedGoalIds.length}/${unit.roleplay.goals.length} 个小目标`,
-      starsEarned: starsAwarded > 0 ? starsAwarded : undefined,
-      updatedAt: nowIso,
-    })
-    .where(eq(chatSessions.id, sessionId))
-    .run();
+    addDailyLogStats(tx, today, {
+      studySeconds: 20,
+      wordsPracticed: Math.max(1, resp.masteredWords.length),
+      activitiesCompleted: starsAwarded > 0 ? 1 : 0,
+    });
 
-  const today = todayDateKey(now);
-  const log = db
-    .select()
-    .from(dailyLogs)
-    .where(and(eq(dailyLogs.profileId, 1), eq(dailyLogs.dateKey, today)))
-    .get();
-  if (log) {
-    db.update(dailyLogs)
-      .set({
-        studySeconds: log.studySeconds + 20,
-        wordsPracticed: log.wordsPracticed + Math.max(1, resp.masteredWords.length),
-        activitiesCompleted: log.activitiesCompleted + (resp.isSceneComplete ? 1 : 0),
-      })
-      .where(eq(dailyLogs.id, log.id))
-      .run();
-  } else {
-    db.insert(dailyLogs)
-      .values({
-        profileId: 1,
-        dateKey: today,
-        studySeconds: 20,
-        activitiesCompleted: resp.isSceneComplete ? 1 : 0,
-        wordsPracticed: Math.max(1, resp.masteredWords.length),
-      })
-      .run();
-  }
+    return {
+      sessionId: activeSessionId!,
+      starsAwarded,
+      finalCompletedGoals,
+      authoritativeComplete,
+    };
+  });
+
+  const normalizedResp = {
+    ...resp,
+    completedGoalIds: txResult.finalCompletedGoals,
+    isSceneComplete: txResult.authoritativeComplete,
+  };
 
   return NextResponse.json({
-    sessionId,
-    response: resp,
+    sessionId: txResult.sessionId,
+    response: normalizedResp,
     usedFallback: agentResult.usedFallback,
     fallbackReason: agentResult.fallbackReason,
-    starsAwarded,
+    starsAwarded: txResult.starsAwarded,
   });
 }

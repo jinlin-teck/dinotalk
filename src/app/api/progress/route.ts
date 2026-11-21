@@ -2,17 +2,33 @@ import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, todayDateKey } from "@/db";
-import { childProfiles, dailyLogs, unitProgress, wordMastery } from "@/db/schema";
+import { unitProgress, wordMastery } from "@/db/schema";
 import { getUnitById } from "@/data/curriculum";
-import { calculateNextReview } from "@/lib/srs";
+import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
+import {
+  addDailyLogStats,
+  awardStarsAndMood,
+  DEFAULT_PROFILE_ID,
+  isValidCurriculumItemKey,
+  serializeProfile,
+  upsertWordMasteryItem,
+} from "@/lib/services/learning-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   const db = getDb();
-  const progress = db.select().from(unitProgress).where(eq(unitProgress.profileId, 1)).all();
-  const mastery = db.select().from(wordMastery).where(eq(wordMastery.profileId, 1)).all();
+  const progress = db
+    .select()
+    .from(unitProgress)
+    .where(eq(unitProgress.profileId, DEFAULT_PROFILE_ID))
+    .all();
+  const mastery = db
+    .select()
+    .from(wordMastery)
+    .where(eq(wordMastery.profileId, DEFAULT_PROFILE_ID))
+    .all();
 
   return NextResponse.json({
     unitProgress: progress,
@@ -22,7 +38,7 @@ export async function GET() {
 
 const CompleteStepSchema = z.object({
   unitId: z.string().min(1),
-  step: z.enum(["story", "phonics", "game", "roleplay"]),
+  step: z.enum(["story", "phonics", "game"]),
   score: z.number().int().min(0).max(100).optional(),
   practicedItems: z
     .array(
@@ -36,6 +52,9 @@ const CompleteStepSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const originError = assertJsonSameOrigin(request);
+  if (originError) return originError;
+
   const body = await request.json().catch(() => null);
   const parsed = CompleteStepSchema.safeParse(body);
   if (!parsed.success) {
@@ -48,85 +67,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "单元不存在" }, { status: 404 });
   }
 
+  if (practicedItems) {
+    for (const item of practicedItems) {
+      if (!isValidCurriculumItemKey(item.itemKey, item.itemType)) {
+        return NextResponse.json({ error: "存在无效的词库或拼读项" }, { status: 400 });
+      }
+    }
+  }
+
   const db = getDb();
   const now = new Date();
   const nowIso = now.toISOString();
+  const today = todayDateKey(now);
 
-  let row = db
-    .select()
-    .from(unitProgress)
-    .where(and(eq(unitProgress.profileId, 1), eq(unitProgress.unitId, unitId)))
-    .get();
-
-  const wasDone =
-    row &&
-    ((step === "story" && row.storyDone === 1) ||
-      (step === "phonics" && row.phonicsDone === 1) ||
-      (step === "game" && row.gameDone === 1) ||
-      (step === "roleplay" && row.roleplayDone === 1));
-
-  const nextStory = step === "story" ? 1 : row?.storyDone ?? 0;
-  const nextPhonics = step === "phonics" ? 1 : row?.phonicsDone ?? 0;
-  const nextGame = step === "game" ? 1 : row?.gameDone ?? 0;
-  const nextRoleplay = step === "roleplay" ? 1 : row?.roleplayDone ?? 0;
-  const nextStarsCount = nextStory + nextPhonics + nextGame + nextRoleplay;
-  const nextBestGame =
-    step === "game" && score !== undefined
-      ? Math.max(row?.bestGameScore ?? 0, score)
-      : row?.bestGameScore ?? 0;
-
-  if (row) {
-    db.update(unitProgress)
-      .set({
-        storyDone: nextStory,
-        phonicsDone: nextPhonics,
-        gameDone: nextGame,
-        roleplayDone: nextRoleplay,
-        starsEarned: nextStarsCount,
-        bestGameScore: nextBestGame,
-        updatedAt: nowIso,
-      })
-      .where(eq(unitProgress.id, row.id))
-      .run();
-  } else {
-    db.insert(unitProgress)
-      .values({
-        profileId: 1,
-        unitId,
-        storyDone: nextStory,
-        phonicsDone: nextPhonics,
-        gameDone: nextGame,
-        roleplayDone: nextRoleplay,
-        starsEarned: nextStarsCount,
-        bestGameScore: nextBestGame,
-        updatedAt: nowIso,
-      })
-      .run();
-  }
-
-  row = db
-    .select()
-    .from(unitProgress)
-    .where(and(eq(unitProgress.profileId, 1), eq(unitProgress.unitId, unitId)))
-    .get()!;
-
-  // Award stars: first time completing step yields +3 (roleplay +4), repeat practice yields +1
-  const starsAwarded = wasDone ? 1 : step === "roleplay" ? 4 : 3;
-
-  const profile = db.select().from(childProfiles).where(eq(childProfiles.id, 1)).get()!;
-  const nextTotalStars = profile.totalStars + starsAwarded;
-  const nextLevel = Math.max(profile.level, 1 + Math.floor(nextTotalStars / 20));
-  db.update(childProfiles)
-    .set({
-      totalStars: nextTotalStars,
-      level: nextLevel,
-      petMood: Math.min(100, profile.petMood + 5),
-      updatedAt: nowIso,
-    })
-    .where(eq(childProfiles.id, 1))
-    .run();
-
-  // Upsert SRS items
   const defaultItems: Array<{ itemKey: string; itemType: "word" | "phonics"; correct: boolean }> =
     practicedItems && practicedItems.length > 0
       ? practicedItems
@@ -134,74 +87,98 @@ export async function POST(request: Request) {
       ? unit.phonics.map((p) => ({ itemKey: p.id, itemType: "phonics" as const, correct: true }))
       : unit.vocab.map((v) => ({ itemKey: v.id, itemType: "word" as const, correct: true }));
 
-  for (const item of defaultItems) {
-    const existing = db
+  const txResult = db.transaction((tx) => {
+    const existingRow = tx
       .select()
-      .from(wordMastery)
-      .where(and(eq(wordMastery.profileId, 1), eq(wordMastery.itemKey, item.itemKey)))
+      .from(unitProgress)
+      .where(
+        and(eq(unitProgress.profileId, DEFAULT_PROFILE_ID), eq(unitProgress.unitId, unitId))
+      )
       .get();
 
-    const srs = calculateNextReview(existing?.masteryLevel ?? 0, item.correct, now);
-    if (existing) {
-      db.update(wordMastery)
+    const wasDone =
+      existingRow &&
+      ((step === "story" && existingRow.storyDone === 1) ||
+        (step === "phonics" && existingRow.phonicsDone === 1) ||
+        (step === "game" && existingRow.gameDone === 1));
+
+    const nextStory = step === "story" ? 1 : existingRow?.storyDone ?? 0;
+    const nextPhonics = step === "phonics" ? 1 : existingRow?.phonicsDone ?? 0;
+    const nextGame = step === "game" ? 1 : existingRow?.gameDone ?? 0;
+    const nextRoleplay = existingRow?.roleplayDone ?? 0;
+    const nextStarsCount = nextStory + nextPhonics + nextGame + nextRoleplay;
+    const nextBestGame =
+      step === "game" && score !== undefined
+        ? Math.max(existingRow?.bestGameScore ?? 0, score)
+        : existingRow?.bestGameScore ?? 0;
+
+    if (existingRow) {
+      tx.update(unitProgress)
         .set({
-          masteryLevel: srs.masteryLevel,
-          correctCount: existing.correctCount + (item.correct ? 1 : 0),
-          wrongCount: existing.wrongCount + (item.correct ? 0 : 1),
-          nextReviewAt: srs.nextReviewAt,
-          lastPracticedAt: nowIso,
+          storyDone: nextStory,
+          phonicsDone: nextPhonics,
+          gameDone: nextGame,
+          roleplayDone: nextRoleplay,
+          starsEarned: nextStarsCount,
+          bestGameScore: nextBestGame,
+          updatedAt: nowIso,
         })
-        .where(eq(wordMastery.id, existing.id))
+        .where(eq(unitProgress.id, existingRow.id))
         .run();
     } else {
-      db.insert(wordMastery)
+      tx.insert(unitProgress)
         .values({
-          profileId: 1,
-          itemKey: item.itemKey,
-          itemType: item.itemType,
+          profileId: DEFAULT_PROFILE_ID,
           unitId,
-          masteryLevel: srs.masteryLevel,
-          correctCount: item.correct ? 1 : 0,
-          wrongCount: item.correct ? 0 : 1,
-          nextReviewAt: srs.nextReviewAt,
-          lastPracticedAt: nowIso,
+          storyDone: nextStory,
+          phonicsDone: nextPhonics,
+          gameDone: nextGame,
+          roleplayDone: nextRoleplay,
+          starsEarned: nextStarsCount,
+          bestGameScore: nextBestGame,
+          updatedAt: nowIso,
         })
         .run();
     }
-  }
 
-  // Update today's daily log
-  const today = todayDateKey(now);
-  const log = db
-    .select()
-    .from(dailyLogs)
-    .where(and(eq(dailyLogs.profileId, 1), eq(dailyLogs.dateKey, today)))
-    .get();
-  if (log) {
-    db.update(dailyLogs)
-      .set({
-        activitiesCompleted: log.activitiesCompleted + 1,
-        wordsPracticed: log.wordsPracticed + defaultItems.length,
-        studySeconds: log.studySeconds + 45,
-      })
-      .where(eq(dailyLogs.id, log.id))
-      .run();
-  } else {
-    db.insert(dailyLogs)
-      .values({
-        profileId: 1,
-        dateKey: today,
-        studySeconds: 45,
-        activitiesCompleted: 1,
-        wordsPracticed: defaultItems.length,
-      })
-      .run();
-  }
+    const updatedProgress = tx
+      .select()
+      .from(unitProgress)
+      .where(
+        and(eq(unitProgress.profileId, DEFAULT_PROFILE_ID), eq(unitProgress.unitId, unitId))
+      )
+      .get()!;
 
-  const freshProfile = db.select().from(childProfiles).where(eq(childProfiles.id, 1)).get()!;
-  return NextResponse.json({
-    unitProgress: row,
-    starsAwarded,
-    profile: freshProfile,
+    const starsAwarded = wasDone ? 1 : 3;
+
+    const freshProfile = awardStarsAndMood(tx, {
+      starsDelta: starsAwarded,
+      moodDelta: 5,
+      nowIso,
+    })!;
+
+    for (const item of defaultItems) {
+      upsertWordMasteryItem(tx, {
+        itemKey: item.itemKey,
+        itemType: item.itemType,
+        unitId,
+        correct: item.correct,
+        now,
+      });
+    }
+
+    addDailyLogStats(tx, today, {
+      activitiesCompleted: 1,
+      wordsPracticed: defaultItems.length,
+      studySeconds: 45,
+    });
+
+    return {
+      unitProgress: updatedProgress,
+      starsAwarded,
+      profile: serializeProfile(freshProfile),
+    };
   });
+
+  return NextResponse.json(txResult);
 }

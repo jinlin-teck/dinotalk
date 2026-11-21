@@ -4,11 +4,29 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { appSettings } from "@/db/schema";
 import { isLlmConfigured, maskSecret } from "@/lib/ai/provider";
+import { hashParentPin, requireParentAuth, setParentSessionCookie } from "@/lib/auth/parent-session";
+import {
+  assertJsonSameOrigin,
+  canReuseStoredSecret,
+  validateEndpointUrl,
+} from "@/lib/security/endpoint-guard";
+import { resolveSttBaseUrl } from "@/lib/speech/constants";
+import type { SanitizedSettings } from "@/types/api";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function serializeSanitizedSettings(row: typeof appSettings.$inferSelect) {
+function asTtsEngine(value: string): SanitizedSettings["ttsEngine"] {
+  return value === "edge" || value === "openai" || value === "browser" ? value : "edge";
+}
+
+function asSttEngine(value: string): SanitizedSettings["sttEngine"] {
+  return value === "browser" || value === "openai" || value === "minimax" ? value : "browser";
+}
+
+function serializeSanitizedSettings(
+  row: typeof appSettings.$inferSelect
+): SanitizedSettings {
   const llmConfigured = isLlmConfigured({
     provider: row.llmProvider,
     baseUrl: row.llmBaseUrl,
@@ -25,7 +43,7 @@ function serializeSanitizedSettings(row: typeof appSettings.$inferSelect) {
     isLlmReady: llmConfigured,
     llmModel: row.llmModel,
     llmTemperature: row.llmTemperature,
-    ttsEngine: row.ttsEngine,
+    ttsEngine: asTtsEngine(row.ttsEngine),
     ttsVoiceEn: row.ttsVoiceEn,
     ttsVoiceZh: row.ttsVoiceZh,
     ttsSpeed: row.ttsSpeed,
@@ -34,7 +52,7 @@ function serializeSanitizedSettings(row: typeof appSettings.$inferSelect) {
     ttsApiKeyMasked: maskSecret(row.ttsApiKey),
     hasTtsApiKey: Boolean(row.ttsApiKey.trim()),
     ttsApiModel: row.ttsApiModel,
-    sttEngine: row.sttEngine,
+    sttEngine: asSttEngine(row.sttEngine),
     sttApiBaseUrl: row.sttApiBaseUrl,
     sttApiKeyMasked: maskSecret(row.sttApiKey),
     hasSttApiKey: Boolean(row.sttApiKey.trim()),
@@ -44,7 +62,10 @@ function serializeSanitizedSettings(row: typeof appSettings.$inferSelect) {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const authError = requireParentAuth(request);
+  if (authError) return authError;
+
   const db = getDb();
   const row = db.select().from(appSettings).where(eq(appSettings.id, 1)).get();
   if (!row) {
@@ -77,7 +98,38 @@ const UpdateSettingsSchema = z.object({
   parentPin: z.string().max(20).optional(),
 });
 
+function resolveApiKey(
+  storedKey: string,
+  draftKey: string | undefined,
+  clear: boolean | undefined,
+  storedUrl: string,
+  nextUrl: string
+): string | null {
+  if (clear) return "";
+  const enteredKey = draftKey?.trim();
+  if (enteredKey) return enteredKey;
+  // 目标地址为空时没有可发送的出口，保留已存密钥不算跨来源复用。
+  if (!nextUrl.trim()) return storedKey;
+  if (!storedKey.trim() || storedUrl === nextUrl || canReuseStoredSecret(nextUrl, storedUrl)) {
+    return storedKey;
+  }
+  return null;
+}
+
+function originChangeResponse(label: string) {
+  return NextResponse.json(
+    { error: `${label}接口来源已变更，请输入新来源对应的 API Key，或明确清除已存密钥` },
+    { status: 400 }
+  );
+}
+
 export async function PUT(request: Request) {
+  const originError = assertJsonSameOrigin(request);
+  if (originError) return originError;
+
+  const authError = requireParentAuth(request);
+  if (authError) return authError;
+
   const body = await request.json().catch(() => null);
   const parsed = UpdateSettingsSchema.safeParse(body);
   if (!parsed.success) {
@@ -85,36 +137,101 @@ export async function PUT(request: Request) {
   }
 
   const db = getDb();
+  return db.transaction((tx) => saveSettings(request, tx, parsed.data), { behavior: "immediate" });
+}
+
+function saveSettings(
+  request: Request,
+  db: Pick<ReturnType<typeof getDb>, "select" | "update">,
+  d: z.infer<typeof UpdateSettingsSchema>
+) {
   const existing = db.select().from(appSettings).where(eq(appSettings.id, 1)).get();
   if (!existing) {
     return NextResponse.json({ error: "Settings not found" }, { status: 404 });
   }
 
-  const d = parsed.data;
-  const nextLlmKey = d.clearLlmApiKey
-    ? ""
-    : d.llmApiKey !== undefined && d.llmApiKey.trim() !== ""
-    ? d.llmApiKey.trim()
-    : existing.llmApiKey;
+  const authError = requireParentAuth(request, existing.parentSessionVersion);
+  if (authError) return authError;
 
-  const nextTtsKey = d.clearTtsApiKey
-    ? ""
-    : d.ttsApiKey !== undefined && d.ttsApiKey.trim() !== ""
-    ? d.ttsApiKey.trim()
-    : existing.ttsApiKey;
+  const llmUrlCheck =
+    d.llmBaseUrl !== undefined && d.llmBaseUrl !== existing.llmBaseUrl
+      ? validateEndpointUrl(d.llmBaseUrl, { allowEmpty: true })
+      : { ok: true as const, normalized: existing.llmBaseUrl, origin: "" };
+  if (!llmUrlCheck.ok) {
+    return NextResponse.json({ error: `大模型 ${llmUrlCheck.error}` }, { status: 400 });
+  }
 
-  const nextSttKey = d.clearSttApiKey
-    ? ""
-    : d.sttApiKey !== undefined && d.sttApiKey.trim() !== ""
-    ? d.sttApiKey.trim()
-    : existing.sttApiKey;
+  const ttsUrlCheck =
+    d.ttsApiBaseUrl !== undefined && d.ttsApiBaseUrl !== existing.ttsApiBaseUrl
+      ? validateEndpointUrl(d.ttsApiBaseUrl, { allowEmpty: true })
+      : { ok: true as const, normalized: existing.ttsApiBaseUrl, origin: "" };
+  if (!ttsUrlCheck.ok) {
+    return NextResponse.json({ error: `TTS ${ttsUrlCheck.error}` }, { status: 400 });
+  }
+
+  const sttUrlCheck =
+    d.sttApiBaseUrl !== undefined && d.sttApiBaseUrl !== existing.sttApiBaseUrl
+      ? validateEndpointUrl(d.sttApiBaseUrl, { allowEmpty: true })
+      : { ok: true as const, normalized: existing.sttApiBaseUrl, origin: "" };
+  if (!sttUrlCheck.ok) {
+    return NextResponse.json({ error: `STT ${sttUrlCheck.error}` }, { status: 400 });
+  }
+
+  if (d.parentPin !== undefined) {
+    const trimmedPin = d.parentPin.trim();
+    if (trimmedPin !== "" && trimmedPin.length < 4) {
+      return NextResponse.json({ error: "家长密码至少需要 4 位字符" }, { status: 400 });
+    }
+  }
+
+  const nextLlmBaseUrl = llmUrlCheck.normalized;
+  const nextTtsBaseUrl = ttsUrlCheck.normalized;
+  const nextSttEngine = d.sttEngine ?? existing.sttEngine;
+  const storedSttUrl = resolveSttBaseUrl(existing.sttEngine, existing.sttApiBaseUrl);
+  let nextSttBaseUrl = sttUrlCheck.normalized;
+  if (
+    nextSttEngine === "browser" && existing.sttEngine === "minimax" &&
+    !nextSttBaseUrl.trim() && !existing.sttApiBaseUrl.trim() && existing.sttApiKey.trim() &&
+    !d.clearSttApiKey
+  ) {
+    // Keep the MiniMax key tied to its original default when cloud STT is paused.
+    nextSttBaseUrl = storedSttUrl;
+  }
+  const nextSttUrl = resolveSttBaseUrl(nextSttEngine, nextSttBaseUrl);
+  if (nextSttUrl !== storedSttUrl && nextSttUrl && !nextSttBaseUrl) {
+    const defaultUrlCheck = validateEndpointUrl(nextSttUrl);
+    if (!defaultUrlCheck.ok) {
+      return NextResponse.json({ error: `STT ${defaultUrlCheck.error}` }, { status: 400 });
+    }
+  }
+
+  const nextLlmKey = resolveApiKey(
+    existing.llmApiKey, d.llmApiKey, d.clearLlmApiKey, existing.llmBaseUrl, nextLlmBaseUrl
+  );
+  if (nextLlmKey === null) return originChangeResponse("大模型");
+  const nextTtsKey = resolveApiKey(
+    existing.ttsApiKey, d.ttsApiKey, d.clearTtsApiKey, existing.ttsApiBaseUrl, nextTtsBaseUrl
+  );
+  if (nextTtsKey === null) return originChangeResponse("TTS ");
+  const nextSttKey = resolveApiKey(
+    existing.sttApiKey, d.sttApiKey, d.clearSttApiKey, storedSttUrl, nextSttUrl
+  );
+  if (nextSttKey === null) return originChangeResponse("STT ");
+
+  const nextParentPin =
+    d.parentPin === undefined
+      ? existing.parentPin
+      : d.parentPin.trim() === ""
+      ? ""
+      : hashParentPin(d.parentPin.trim());
+  const nextSessionVersion = existing.parentSessionVersion + (d.parentPin === undefined ? 0 : 1);
 
   const now = new Date().toISOString();
 
   db.update(appSettings)
     .set({
       llmProvider: d.llmProvider ?? existing.llmProvider,
-      llmBaseUrl: d.llmBaseUrl !== undefined ? d.llmBaseUrl.trim() : existing.llmBaseUrl,
+      llmBaseUrl: nextLlmBaseUrl,
       llmApiKey: nextLlmKey,
       llmModel: d.llmModel !== undefined ? d.llmModel.trim() : existing.llmModel,
       llmTemperature: d.llmTemperature ?? existing.llmTemperature,
@@ -124,24 +241,26 @@ export async function PUT(request: Request) {
       ttsSpeed: d.ttsSpeed ?? existing.ttsSpeed,
       ttsAutoPlayZh:
         d.ttsAutoPlayZh !== undefined ? (d.ttsAutoPlayZh ? 1 : 0) : existing.ttsAutoPlayZh,
-      ttsApiBaseUrl:
-        d.ttsApiBaseUrl !== undefined ? d.ttsApiBaseUrl.trim() : existing.ttsApiBaseUrl,
+      ttsApiBaseUrl: nextTtsBaseUrl,
       ttsApiKey: nextTtsKey,
       ttsApiModel: d.ttsApiModel !== undefined ? d.ttsApiModel.trim() : existing.ttsApiModel,
-      sttEngine: d.sttEngine ?? existing.sttEngine,
-      sttApiBaseUrl:
-        d.sttApiBaseUrl !== undefined ? d.sttApiBaseUrl.trim() : existing.sttApiBaseUrl,
+      sttEngine: nextSttEngine,
+      sttApiBaseUrl: nextSttBaseUrl,
       sttApiKey: nextSttKey,
       sttApiModel: d.sttApiModel !== undefined ? d.sttApiModel.trim() : existing.sttApiModel,
-      parentPin: d.parentPin !== undefined ? d.parentPin.trim() : existing.parentPin,
+      parentPin: nextParentPin,
+      parentSessionVersion: nextSessionVersion,
       updatedAt: now,
     })
     .where(eq(appSettings.id, 1))
     .run();
 
   const updated = db.select().from(appSettings).where(eq(appSettings.id, 1)).get()!;
-  return NextResponse.json({
+  const response = NextResponse.json({
     ok: true,
     settings: serializeSanitizedSettings(updated),
   });
+  return d.parentPin === undefined
+    ? response
+    : setParentSessionCookie(response, request, nextSessionVersion);
 }

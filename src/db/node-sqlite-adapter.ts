@@ -24,7 +24,7 @@ function toPlainObjectRow(row: unknown): unknown {
 
 export interface BetterSqliteCompatClient {
   exec: (sql: string) => void;
-  pragma: (pragmaClause: string) => void;
+  pragma: (pragmaClause: string) => unknown[];
   close: () => void;
   prepare: (sqlText: string) => {
     run: (...params: unknown[]) => { changes: number | bigint; lastInsertRowid: number | bigint };
@@ -46,24 +46,44 @@ export interface BetterSqliteCompatClient {
 
 export function createBetterSqliteCompatClient(dbPath: string): BetterSqliteCompatClient {
   const db = new DatabaseSync(dbPath);
+  let txDepth = 0;
 
   const runInTx = <TArgs extends unknown[], TResult>(
     mode: "DEFERRED" | "IMMEDIATE" | "EXCLUSIVE",
     fn: (...args: TArgs) => TResult
   ) => {
     return (...args: TArgs): TResult => {
-      db.exec(`BEGIN ${mode}`);
+      const isOuter = txDepth === 0;
+      const spName = `sp_${txDepth}`;
+      if (isOuter) {
+        db.exec(`BEGIN ${mode}`);
+      } else {
+        db.exec(`SAVEPOINT ${spName}`);
+      }
+      txDepth += 1;
+
       try {
         const result = fn(...args);
-        db.exec("COMMIT");
+        if (isOuter) {
+          db.exec("COMMIT");
+        } else {
+          db.exec(`RELEASE SAVEPOINT ${spName}`);
+        }
         return result;
       } catch (err) {
         try {
-          db.exec("ROLLBACK");
+          if (isOuter) {
+            db.exec("ROLLBACK");
+          } else {
+            db.exec(`ROLLBACK TO SAVEPOINT ${spName}`);
+            db.exec(`RELEASE SAVEPOINT ${spName}`);
+          }
         } catch {
           // ignore rollback error if transaction already closed
         }
         throw err;
+      } finally {
+        txDepth -= 1;
       }
     };
   };
@@ -73,7 +93,9 @@ export function createBetterSqliteCompatClient(dbPath: string): BetterSqliteComp
       db.exec(sql);
     },
     pragma(pragmaClause: string) {
-      db.exec(`PRAGMA ${pragmaClause}`);
+      const stmt = db.prepare(`PRAGMA ${pragmaClause}`) as unknown as NodeSqliteStatement;
+      stmt.setReturnArrays?.(false);
+      return stmt.all().map(toPlainObjectRow);
     },
     close() {
       db.close();

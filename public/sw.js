@@ -33,7 +33,16 @@ self.addEventListener("fetch", (event) => {
 
   if (req.mode === "navigate") {
     event.respondWith(
-      fetch(req).catch(() => caches.match(req))
+      fetch(req).catch(async () => {
+        const cached = await caches.match(req);
+        return (
+          cached ||
+          new Response("当前处于离线状态，请检查网络连接后重试。", {
+            status: 503,
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          })
+        );
+      })
     );
   }
 });

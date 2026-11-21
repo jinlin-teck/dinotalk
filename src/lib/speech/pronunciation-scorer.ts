@@ -22,12 +22,17 @@ const HOMOPHONE_EQUIV: Record<string, string> = {
   by: "bye",
   pair: "pear",
   bare: "bear",
-  no: "nose",
-  know: "no",
   blue: "blew",
-  pen: "pan",
-  cat: "hat",
 };
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function containsWholePhrase(text: string, phrase: string): boolean {
+  if (!phrase) return false;
+  return new RegExp(`(?:^|\\s)${escapeRegex(phrase)}(?:$|\\s)`).test(text);
+}
 
 export function normalizeSpeechText(input: string): string {
   return input
@@ -82,7 +87,7 @@ export function scorePronunciation(
   const spoken = normalizeSpeechText(spokenRaw);
   const target = normalizeSpeechText(targetRaw);
 
-  if (!spoken) {
+  if (!spoken || !target) {
     return {
       score: 0,
       stars: 1,
@@ -91,7 +96,7 @@ export function scorePronunciation(
     };
   }
 
-  if (spoken === target || spoken.includes(target)) {
+  if (spoken === target || containsWholePhrase(spoken, target)) {
     return {
       score: 100,
       stars: 3,

@@ -2,13 +2,77 @@ import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { appSettings } from "@/db/schema";
+import { assertSameOrigin } from "@/lib/security/endpoint-guard";
+import { consumeRateLimit, getRequestSourceKey } from "@/lib/security/rate-limit";
+import { resolveActiveSttMode } from "@/lib/speech/constants";
 import { transcribeWithMiniMax, transcribeWithOpenAi } from "@/lib/speech/stt";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_FORM_BYTES = MAX_AUDIO_BYTES + 64 * 1024; // multipart headers and hints
+const RATE_LIMIT_MAX = 40;
+const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+
+function oversizedAudioResponse() {
+  return NextResponse.json(
+    { ok: false, error: "录音文件过大，请简短说话后再试哦" },
+    { status: 413 }
+  );
+}
+
+function isAllowedAudioMime(mime: string): boolean {
+  const clean = mime.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (!clean) return true;
+  return (
+    clean.startsWith("audio/") ||
+    clean === "video/webm" ||
+    clean === "application/octet-stream"
+  );
+}
+
 export async function POST(request: Request) {
-  const form = await request.formData().catch(() => null);
+  const originError = assertSameOrigin(request);
+  if (originError) return originError;
+
+  if (Number(request.headers.get("content-length")) > MAX_FORM_BYTES) {
+    return oversizedAudioResponse();
+  }
+
+  if (
+    consumeRateLimit(
+      "speech-stt",
+      getRequestSourceKey(request),
+      RATE_LIMIT_MAX,
+      RATE_LIMIT_WINDOW_MS
+    )
+  ) {
+    return NextResponse.json(
+      { ok: false, error: "语音识别请求太频繁，休息一下再试试哦~" },
+      { status: 429 }
+    );
+  }
+
+  let bytesRead = 0;
+  let formTooLarge = false;
+  const limitedBody = request.body?.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        bytesRead += chunk.byteLength;
+        if (bytesRead > MAX_FORM_BYTES) {
+          formTooLarge = true;
+          controller.error(new Error("Multipart body exceeds size limit"));
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    })
+  );
+  const form = await new Response(limitedBody, { headers: request.headers })
+    .formData()
+    .catch(() => null);
+  if (formTooLarge) return oversizedAudioResponse();
   if (!form) {
     return NextResponse.json({ ok: false, error: "音频表单读取失败" }, { status: 400 });
   }
@@ -19,16 +83,25 @@ export async function POST(request: Request) {
   if (!(audio instanceof Blob) || audio.size < 16) {
     return NextResponse.json({ ok: false, error: "录音太短，请再试一次哦" }, { status: 400 });
   }
+  if (audio.size > MAX_AUDIO_BYTES) {
+    return oversizedAudioResponse();
+  }
+  if (!isAllowedAudioMime(audio.type)) {
+    return NextResponse.json({ ok: false, error: "不支持的音频格式" }, { status: 400 });
+  }
 
   const db = getDb();
   const settings = db.select().from(appSettings).where(eq(appSettings.id, 1)).get();
 
-  const isOpenAiReady =
-    settings?.sttEngine === "openai" && Boolean(settings.sttApiBaseUrl.trim());
-  const isMiniMaxReady =
-    settings?.sttEngine === "minimax" && Boolean(settings.sttApiKey.trim());
+  const activeMode = settings
+    ? resolveActiveSttMode({
+        sttEngine: settings.sttEngine,
+        sttApiBaseUrl: settings.sttApiBaseUrl,
+        hasSttApiKey: Boolean(settings.sttApiKey.trim()),
+      })
+    : "browser";
 
-  if (!settings || (!isOpenAiReady && !isMiniMaxReady)) {
+  if (!settings || activeMode === "browser") {
     return NextResponse.json({
       ok: false,
       code: "stt_not_configured",
@@ -40,7 +113,7 @@ export async function POST(request: Request) {
   try {
     const filename = audio instanceof File && audio.name ? audio.name : "speech.wav";
     const text =
-      settings.sttEngine === "minimax"
+      activeMode === "minimax"
         ? await transcribeWithMiniMax({
             audioBlob: audio,
             filename,
@@ -58,11 +131,11 @@ export async function POST(request: Request) {
             hints,
           });
     return NextResponse.json({ ok: true, text });
-  } catch (err) {
+  } catch {
     return NextResponse.json({
       ok: false,
       code: "stt_failed",
-      error: err instanceof Error ? err.message : "语音识别失败",
+      error: "语音识别暂时不可用，可以再试一次或点提示卡片继续哦~",
       text: "",
     });
   }

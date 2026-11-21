@@ -1,7 +1,13 @@
 import { normalizeBaseUrl } from "@/lib/ai/provider";
+import { fetchProviderEndpoint } from "@/lib/security/provider-fetch";
+import {
+  MINIMAX_STT_DEFAULT_MODEL,
+  MINIMAX_STT_DEFAULT_URL,
+} from "./constants";
 
-export const MINIMAX_STT_DEFAULT_URL = "https://api.minimax.cn/v1/speech_to_text";
-export const MINIMAX_STT_DEFAULT_MODEL = "asr-1.0";
+export { MINIMAX_STT_DEFAULT_MODEL, MINIMAX_STT_DEFAULT_URL };
+
+export class SttProviderError extends Error {}
 
 export interface SttRequestParams {
   audioBlob: Blob;
@@ -30,7 +36,7 @@ export function resolveMiniMaxSttUrl(baseUrl: string): string {
 export async function transcribeWithOpenAi(params: SttRequestParams): Promise<string> {
   const base = normalizeBaseUrl(params.baseUrl);
   if (!base) {
-    throw new Error("未配置语音识别 (STT) 服务地址");
+    throw new SttProviderError("未配置语音识别 (STT) 服务地址");
   }
   const url = base.endsWith("/audio/transcriptions") ? base : `${base}/audio/transcriptions`;
 
@@ -49,7 +55,7 @@ export async function transcribeWithOpenAi(params: SttRequestParams): Promise<st
     if (params.apiKey.trim()) {
       headers.Authorization = `Bearer ${params.apiKey.trim()}`;
     }
-    const res = await fetch(url, {
+    const res = await fetchProviderEndpoint(url, {
       method: "POST",
       headers,
       body: form,
@@ -57,8 +63,8 @@ export async function transcribeWithOpenAi(params: SttRequestParams): Promise<st
     });
 
     if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      throw new Error(`STT 服务返回 HTTP ${res.status}: ${errText.slice(0, 120)}`);
+      await res.body?.cancel();
+      throw new SttProviderError(`STT 服务返回 HTTP ${res.status}`);
     }
 
     const data = (await res.json()) as { text?: string };
@@ -70,19 +76,14 @@ export async function transcribeWithOpenAi(params: SttRequestParams): Promise<st
 
 interface MiniMaxSttResponse {
   text?: string;
-  base_resp?: {
-    status_code?: number;
-    status_msg?: string;
-  };
-  error?: {
-    message?: string;
-  };
+  base_resp?: { status_code?: number };
+  error?: unknown;
 }
 
 export async function transcribeWithMiniMax(params: SttRequestParams): Promise<string> {
   const key = params.apiKey.trim();
   if (!key) {
-    throw new Error("未配置 MiniMax API Key");
+    throw new SttProviderError("未配置 MiniMax API Key");
   }
   const url = resolveMiniMaxSttUrl(params.baseUrl);
 
@@ -102,7 +103,7 @@ export async function transcribeWithMiniMax(params: SttRequestParams): Promise<s
       headers.language = lang;
     }
 
-    const res = await fetch(url, {
+    const res = await fetchProviderEndpoint(url, {
       method: "POST",
       headers,
       body: form,
@@ -119,24 +120,16 @@ export async function transcribeWithMiniMax(params: SttRequestParams): Promise<s
       }
     }
 
-    if (!res.ok) {
-      const detail =
-        parsed?.base_resp?.status_msg ||
-        parsed?.error?.message ||
-        rawText.slice(0, 140) ||
-        res.statusText;
-      throw new Error(`MiniMax STT 返回 HTTP ${res.status}: ${detail}`);
-    }
+    if (!res.ok) throw new SttProviderError(`MiniMax STT 返回 HTTP ${res.status}`);
 
     if (
       parsed?.base_resp &&
-      typeof parsed.base_resp.status_code === "number" &&
+      Number.isSafeInteger(parsed.base_resp.status_code) &&
       parsed.base_resp.status_code !== 0
     ) {
-      throw new Error(
-        `MiniMax STT 错误 (${parsed.base_resp.status_code}): ${parsed.base_resp.status_msg || "语音识别失败"}`
-      );
+      throw new SttProviderError(`MiniMax STT 错误 (${parsed.base_resp.status_code})`);
     }
+    if (!parsed || parsed.error) throw new SttProviderError("MiniMax STT 返回无效结果");
 
     return (parsed?.text ?? "").trim();
   } finally {
