@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
+  Clock,
   Flame,
   Gift,
   Heart,
@@ -11,13 +12,16 @@ import {
   Map,
   MessageCircle,
   Star,
+  Users,
   Volume2,
   VolumeX,
-  Clock,
 } from "lucide-react";
+import { ProfileModal } from "@/components/ProfileModal";
 import { soundEffects } from "@/lib/sound-effects";
+import type { PublicProfileSummary, SerializedProfile } from "@/types/api";
 
 export interface ProfileSummary {
+  id?: number;
   nickname: string;
   companionName: string;
   totalStars: number;
@@ -32,21 +36,47 @@ interface AppShellProps {
   children: React.ReactNode;
   dueReviewCount?: number;
   profile?: ProfileSummary | null;
+  profiles?: PublicProfileSummary[];
+  needsProfile?: boolean;
+  switcherOpen?: boolean;
+  onSwitcherOpenChange?: (open: boolean) => void;
+  onProfileChanged?: (profile: SerializedProfile) => void;
 }
 
-export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProps) {
+export function AppShell({
+  children,
+  dueReviewCount = 0,
+  profile,
+  profiles = [],
+  needsProfile = false,
+  switcherOpen,
+  onSwitcherOpenChange,
+  onProfileChanged,
+}: AppShellProps) {
   const pathname = usePathname();
   const [muted, setMuted] = useState(false);
   const [sessionMinutes, setSessionMinutes] = useState(0);
   const [showEyeCare, setShowEyeCare] = useState(false);
+  const [internalSwitcherOpen, setInternalSwitcherOpen] = useState(false);
 
+  const activeProfileId = profile?.id ?? null;
   const eyeLimit = profile?.eyeCareMinutes ?? 15;
+  const isSwitcherOpen = switcherOpen ?? internalSwitcherOpen;
+
+  const setSwitcherVisible = (open: boolean) => {
+    if (onSwitcherOpenChange) {
+      onSwitcherOpenChange(open);
+    } else {
+      setInternalSwitcherOpen(open);
+    }
+  };
 
   useEffect(() => {
     setMuted(soundEffects.isMuted());
   }, []);
 
   useEffect(() => {
+    if (!activeProfileId) return;
     const recordVisit = () => {
       if (document.visibilityState !== "visible") return;
       fetch("/api/profile", {
@@ -58,11 +88,17 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
     recordVisit();
     document.addEventListener("visibilitychange", recordVisit);
     return () => document.removeEventListener("visibilitychange", recordVisit);
-  }, [pathname]);
+  }, [pathname, activeProfileId]);
 
   useEffect(() => {
-    const SECS_KEY = "dinotalk_visible_study_secs";
-    const ALERT_KEY = "dinotalk_eye_care_last_min";
+    if (!activeProfileId) {
+      setSessionMinutes(0);
+      setShowEyeCare(false);
+      return;
+    }
+
+    const SECS_KEY = `dinotalk_visible_study_secs_${activeProfileId}`;
+    const ALERT_KEY = `dinotalk_eye_care_last_min_${activeProfileId}`;
 
     const readNum = (key: string) => {
       try {
@@ -74,6 +110,7 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
     };
 
     setSessionMinutes(Math.floor(readNum(SECS_KEY) / 60));
+    setShowEyeCare(false);
 
     const timer = setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -104,7 +141,7 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
     }, 30000);
 
     return () => clearInterval(timer);
-  }, [eyeLimit]);
+  }, [eyeLimit, activeProfileId]);
 
   const toggleMute = () => {
     const next = !muted;
@@ -119,6 +156,19 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
     { href: "/chat", label: "自由聊天", icon: MessageCircle },
     { href: "/review", label: "复习宝箱", icon: Gift, badge: dueReviewCount },
   ];
+
+  const handleProfileActivated = (nextProfile: SerializedProfile, isSwitchFromOther: boolean) => {
+    setSwitcherVisible(false);
+    if (isSwitchFromOther && pathname !== "/") {
+      window.location.assign("/");
+      return;
+    }
+    if (onProfileChanged) {
+      onProfileChanged(nextProfile);
+    } else {
+      window.location.reload();
+    }
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FFFDF5] pb-24 md:pb-8">
@@ -137,20 +187,23 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
               <div className="font-extrabold text-base sm:text-lg text-slate-800 truncate leading-tight">
                 DinoTalk 冒险岛
               </div>
-              <div className="text-xs text-emerald-700 font-medium truncate">
+              <div
+                data-testid="header-profile-greeting"
+                className="text-xs text-emerald-700 font-medium truncate"
+              >
                 {profile ? `Hi, ${profile.nickname}!` : "7岁英语启蒙乐园"}
               </div>
             </div>
           </Link>
 
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* Stars */}
             <div
               className="flex items-center gap-1 bg-amber-50 border-2 border-amber-200 rounded-full px-2.5 py-1 text-amber-700 font-extrabold text-sm"
               title="我的学习星星"
             >
               <Star className="w-4 h-4 fill-amber-400 text-amber-500" />
-              <span data-testid="total-stars">{profile?.totalStars ?? 10}</span>
+              <span data-testid="total-stars">{profile?.totalStars ?? 0}</span>
             </div>
 
             {/* Streak */}
@@ -162,7 +215,7 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
               <span>{profile?.streakDays ?? 1}天</span>
             </div>
 
-            {/* Eye care indicator (visible on mobile & desktop) */}
+            {/* Eye care indicator */}
             <button
               type="button"
               onClick={() => setShowEyeCare(true)}
@@ -171,7 +224,9 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
             >
               <Clock className="w-3.5 h-3.5 shrink-0" />
               <span className="sm:hidden">{sessionMinutes}m</span>
-              <span className="hidden sm:inline">{sessionMinutes}m / {eyeLimit}m</span>
+              <span className="hidden sm:inline">
+                {sessionMinutes}m / {eyeLimit}m
+              </span>
             </button>
 
             {/* Mute toggle */}
@@ -183,6 +238,24 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
             >
               {muted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
             </button>
+
+            {/* Switch User (calm top-right utility placement to avoid child mis-taps) */}
+            {profile && (
+              <button
+                type="button"
+                data-testid="switch-profile-btn"
+                aria-label="切换用户"
+                title="切换或新建用户档案"
+                onClick={() => {
+                  soundEffects.playClick();
+                  setSwitcherVisible(true);
+                }}
+                className="h-10 px-2.5 sm:px-3 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-600 text-xs font-bold flex items-center gap-1 transition"
+              >
+                <Users className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">切换</span>
+              </button>
+            )}
 
             {/* Parent Console */}
             <Link
@@ -265,6 +338,17 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
         </div>
       </nav>
 
+      {/* Onboarding / Switcher Modal */}
+      <ProfileModal
+        open={Boolean(needsProfile || isSwitcherOpen)}
+        mode={needsProfile ? "onboarding" : "switcher"}
+        currentProfileId={activeProfileId}
+        profiles={profiles}
+        warnOnSwitch={pathname.startsWith("/unit/") || pathname === "/review"}
+        onClose={() => setSwitcherVisible(false)}
+        onProfileActivated={handleProfileActivated}
+      />
+
       {/* Eye-care break modal */}
       {showEyeCare && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
@@ -272,7 +356,7 @@ export function AppShell({ children, dueReviewCount = 0, profile }: AppShellProp
             <div className="text-5xl mb-3">👀🌿</div>
             <h2 className="text-xl font-black text-slate-800 mb-2">护眼休息小贴士</h2>
             <p className="text-slate-600 text-sm leading-relaxed mb-5">
-              小探险家已经学习一会儿啦！站起来喝口水、看看窗外绿树 20 秒，让小眼睛休息一下再继续吧~
+              {profile?.nickname || "小朋友"}已经学习一会儿啦！站起来喝口水、看看窗外绿树 20 秒，让小眼睛休息一下再继续吧~
             </p>
             <button
               type="button"

@@ -4,7 +4,12 @@ import { z } from "zod";
 import { getDb } from "@/db";
 import { appSettings } from "@/db/schema";
 import { isLlmConfigured, maskSecret } from "@/lib/ai/provider";
-import { hashParentPin, requireParentAuth, setParentSessionCookie } from "@/lib/auth/parent-session";
+import {
+  hashParentPin,
+  requireParentAuth,
+  setParentSessionCookie,
+  validateParentPinFormat,
+} from "@/lib/auth/parent-session";
 import {
   assertJsonSameOrigin,
   canReuseStoredSecret,
@@ -95,7 +100,7 @@ const UpdateSettingsSchema = z.object({
   sttApiKey: z.string().max(300).optional(),
   clearSttApiKey: z.boolean().optional(),
   sttApiModel: z.string().max(80).optional(),
-  parentPin: z.string().max(20).optional(),
+  parentPin: z.string().max(32).optional(),
 });
 
 function resolveApiKey(
@@ -177,11 +182,13 @@ function saveSettings(
     return NextResponse.json({ error: `STT ${sttUrlCheck.error}` }, { status: 400 });
   }
 
+  let validatedParentPin: string | undefined;
   if (d.parentPin !== undefined) {
-    const trimmedPin = d.parentPin.trim();
-    if (trimmedPin !== "" && trimmedPin.length < 4) {
-      return NextResponse.json({ error: "家长密码至少需要 4 位字符" }, { status: 400 });
+    const pinCheck = validateParentPinFormat(d.parentPin);
+    if (!pinCheck.ok) {
+      return NextResponse.json({ error: pinCheck.error }, { status: 400 });
     }
+    validatedParentPin = pinCheck.normalized;
   }
 
   const nextLlmBaseUrl = llmUrlCheck.normalized;
@@ -219,12 +226,10 @@ function saveSettings(
   if (nextSttKey === null) return originChangeResponse("STT ");
 
   const nextParentPin =
-    d.parentPin === undefined
+    validatedParentPin === undefined
       ? existing.parentPin
-      : d.parentPin.trim() === ""
-      ? ""
-      : hashParentPin(d.parentPin.trim());
-  const nextSessionVersion = existing.parentSessionVersion + (d.parentPin === undefined ? 0 : 1);
+      : hashParentPin(validatedParentPin);
+  const nextSessionVersion = existing.parentSessionVersion + (validatedParentPin === undefined ? 0 : 1);
 
   const now = new Date().toISOString();
 

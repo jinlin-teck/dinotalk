@@ -18,7 +18,7 @@ import { DinoCharacter } from "@/components/illustrations/DinoCharacter";
 import { useSpeech } from "@/hooks/useSpeech";
 import { scorePronunciation } from "@/lib/speech/pronunciation-scorer";
 import { soundEffects } from "@/lib/sound-effects";
-import type { EnrichedReviewItem } from "@/types/api";
+import type { EnrichedReviewItem, PublicProfileSummary } from "@/types/api";
 
 function deterministicHash(str: string): number {
   let h = 2166136261;
@@ -33,6 +33,8 @@ export default function DailyReviewPage() {
   const [profile, setProfile] = useState<
     (ProfileSummary & { avatarId?: string; equippedAccessories?: string[] }) | null
   >(null);
+  const [profiles, setProfiles] = useState<PublicProfileSummary[]>([]);
+  const [needsProfile, setNeedsProfile] = useState(false);
   const [items, setItems] = useState<EnrichedReviewItem[]>([]);
   const [isWarmup, setIsWarmup] = useState(false);
   const [dueCount, setDueCount] = useState(0);
@@ -71,12 +73,20 @@ export default function DailyReviewPage() {
     setLoading(true);
     try {
       const [profRes, revRes] = await Promise.all([
-        fetch("/api/profile"),
-        fetch("/api/review"),
+        fetch("/api/profile", { cache: "no-store" }),
+        fetch("/api/review", { cache: "no-store" }),
       ]);
       if (profRes.ok) {
         const pd = await profRes.json();
-        setProfile(pd.profile);
+        setProfiles(pd.profiles ?? []);
+        setNeedsProfile(Boolean(pd.needsProfile));
+        setProfile(pd.profile ?? null);
+        if (pd.needsProfile) {
+          setItems([]);
+          setIsWarmup(true);
+          setDueCount(0);
+          return;
+        }
       }
       if (revRes.ok) {
         const rd = await revRes.json();
@@ -261,7 +271,12 @@ export default function DailyReviewPage() {
   };
 
   return (
-    <AppShell profile={profile} dueReviewCount={isWarmup ? 0 : dueCount}>
+    <AppShell
+      profile={profile}
+      profiles={profiles}
+      needsProfile={needsProfile}
+      dueReviewCount={isWarmup ? 0 : dueCount}
+    >
       <div className="max-w-2xl mx-auto space-y-6">
         <div className="bg-white rounded-3xl border-2 border-amber-200 p-5 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">

@@ -9,10 +9,14 @@ import { consumeVoiceProof, issueVoiceProof } from "@/lib/speech/voice-proof";
 import * as speechStt from "@/lib/speech/stt";
 import { resetParentAuthRateLimit } from "@/lib/auth/parent-session";
 import { GET as authGet, POST as authPost } from "./parent/auth/route";
+import { GET as parentProfilesGet, POST as parentProfilesPost } from "./parent/profiles/route";
+import { PATCH as parentProfilePatch, DELETE as parentProfileDelete } from "./parent/profiles/[id]/route";
 import { GET as settingsGet, PUT as settingsPut } from "./settings/route";
 import { POST as settingsTestPost } from "./settings/test/route";
 import { GET as reportGet } from "./report/route";
 import { GET as profileGet, PATCH as profilePatch } from "./profile/route";
+import { GET as profilesGet, POST as profilesPost } from "./profiles/route";
+import { POST as profilesSelectPost } from "./profiles/select/route";
 import { POST as progressPost } from "./progress/route";
 import { POST as chatPost } from "./agent/chat/route";
 import { POST as freeTalkPost } from "./agent/freetalk/route";
@@ -24,11 +28,13 @@ describe("API routes security, concurrency, and regression checks", () => {
   let tmpDir = "";
   const origDataDir = process.env.DATA_DIR;
   let sessionCookie = "";
+  let profileCookie = "";
+  let activeProfileId = 1;
 
   function jsonRequest(
     path: string,
     body: Record<string, unknown>,
-    { method = "POST", cookie }: { method?: string; cookie?: string } = {}
+    { method = "POST", cookie = profileCookie }: { method?: string; cookie?: string } = {}
   ): Request {
     const headers = new Headers({ "Content-Type": "application/json" });
     if (cookie) headers.set("Cookie", cookie);
@@ -49,26 +55,55 @@ describe("API routes security, concurrency, and regression checks", () => {
     resetParentAuthRateLimit();
     getDb();
 
-    // Unlock parent session for authenticated tests
-    const challengeRes = await authGet(new Request("http://localhost:3000/api/parent/auth"));
-    const chData = await challengeRes.json();
-    const answer = chData.challenge.a + chData.challenge.b;
+    // Fresh DB should prompt password setup and have 0 child profiles
+    const authStateRes = await authGet(new Request("http://localhost:3000/api/parent/auth"));
+    expect(await authStateRes.json()).toEqual({
+      authenticated: false,
+      hasParentPin: false,
+      needsPasswordSetup: true,
+    });
 
-    const unlockRes = await authPost(
+    const initialProfRes = await profileGet(new Request("http://localhost:3000/api/profile"));
+    const initialProfData = await initialProfRes.json();
+    expect(initialProfData).toMatchObject({ needsProfile: true, profile: null, profiles: [] });
+
+    // First-time parent password setup
+    const setupRes = await authPost(
       new Request("http://localhost:3000/api/parent/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "unlock",
-          challengeToken: chData.challenge.token,
-          answer,
+          action: "setup_pin",
+          pin: "parent1234",
+          confirmPin: "parent1234",
         }),
       })
     );
-    expect(unlockRes.status).toBe(200);
-    const setCookie = unlockRes.headers.get("set-cookie") ?? "";
+    expect(setupRes.status).toBe(200);
+    const setCookie = setupRes.headers.get("set-cookie") ?? "";
     sessionCookie = setCookie.split(";")[0];
     expect(sessionCookie).toContain("dinotalk_parent_session=");
+
+    // Second setup_pin attempt must be rejected with 409
+    const duplicateSetupRes = await authPost(
+      jsonRequest(
+        "/api/parent/auth",
+        { action: "setup_pin", pin: "other9999", confirmPin: "other9999" },
+        { cookie: "" }
+      )
+    );
+    expect(duplicateSetupRes.status).toBe(409);
+
+    // Create primary child profile "苗苗"
+    const createChildRes = await profilesPost(
+      jsonRequest("/api/profiles", { nickname: "苗苗" }, { cookie: "" })
+    );
+    expect(createChildRes.status).toBe(201);
+    const childData = await createChildRes.json();
+    activeProfileId = childData.profile.id;
+    const childCookieHeader = createChildRes.headers.get("set-cookie") ?? "";
+    profileCookie = childCookieHeader.split(";")[0];
+    expect(profileCookie).toContain(`dinotalk_profile_id=${activeProfileId}`);
   });
 
   afterEach(() => {
@@ -89,6 +124,9 @@ describe("API routes security, concurrency, and regression checks", () => {
   it("blocks unauthenticated access to parent routes while keeping /api/speech/config public and secret-free", async () => {
     expect(
       (await settingsGet(new Request("http://localhost:3000/api/settings"))).status
+    ).toBe(401);
+    expect(
+      (await parentProfilesGet(new Request("http://localhost:3000/api/parent/profiles"))).status
     ).toBe(401);
     expect(
       (await reportGet(new Request("http://localhost:3000/api/report"))).status
@@ -272,20 +310,12 @@ describe("API routes security, concurrency, and regression checks", () => {
   it("preserves equippedAccessories when completing a unit step via POST /api/progress", async () => {
     // Give child crown and equip it
     const buyRes = await profilePatch(
-      new Request("http://localhost:3000/api/profile", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "buy_accessory", accessoryId: "crown" }),
-      })
+      jsonRequest("/api/profile", { action: "buy_accessory", accessoryId: "crown" }, { method: "PATCH" })
     );
     expect(buyRes.status).toBe(200);
 
     const progRes = await progressPost(
-      new Request("http://localhost:3000/api/progress", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unitId: "u1-greetings", step: "story" }),
-      })
+      jsonRequest("/api/progress", { unitId: "u1-greetings", step: "story" })
     );
     expect(progRes.status).toBe(200);
     const data = await progRes.json();
@@ -301,14 +331,10 @@ describe("API routes security, concurrency, and regression checks", () => {
 
     // Client attempts to spoof all 3 completedGoalIds on first turn with unrelated text
     const spoofRes = await chatPost(
-      new Request("http://localhost:3000/api/agent/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          unitId: "u5-fruits",
-          userText: "hmm",
-          completedGoalIds: ["u5-g1", "u5-g2", "u5-g3"],
-        }),
+      jsonRequest("/api/agent/chat", {
+        unitId: "u5-fruits",
+        userText: "hmm",
+        completedGoalIds: ["u5-g1", "u5-g2", "u5-g3"],
       })
     );
     expect(spoofRes.status).toBe(200);
@@ -321,25 +347,13 @@ describe("API routes security, concurrency, and regression checks", () => {
 
     // Walk all 3 goals legitimately
     await chatPost(
-      new Request("http://localhost:3000/api/agent/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unitId: "u5-fruits", sessionId, userText: "An apple, please!" }),
-      })
+      jsonRequest("/api/agent/chat", { unitId: "u5-fruits", sessionId, userText: "An apple, please!" })
     );
     await chatPost(
-      new Request("http://localhost:3000/api/agent/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unitId: "u5-fruits", sessionId, userText: "Milk, please!" }),
-      })
+      jsonRequest("/api/agent/chat", { unitId: "u5-fruits", sessionId, userText: "Milk, please!" })
     );
     const completeRes = await chatPost(
-      new Request("http://localhost:3000/api/agent/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unitId: "u5-fruits", sessionId, userText: "Thank you!" }),
-      })
+      jsonRequest("/api/agent/chat", { unitId: "u5-fruits", sessionId, userText: "Thank you!" })
     );
     const completeData = await completeRes.json();
     expect(completeData.response.isSceneComplete).toBe(true);
@@ -351,11 +365,7 @@ describe("API routes security, concurrency, and regression checks", () => {
     const totalActivitiesBefore = beforeLogs.reduce((s, r) => s + r.activitiesCompleted, 0);
 
     const postCompleteRes = await chatPost(
-      new Request("http://localhost:3000/api/agent/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ unitId: "u5-fruits", sessionId, userText: "Bye-bye!" }),
-      })
+      jsonRequest("/api/agent/chat", { unitId: "u5-fruits", sessionId, userText: "Bye-bye!" })
     );
     const postCompleteData = await postCompleteRes.json();
     expect(postCompleteData.starsAwarded).toBe(0);
@@ -371,7 +381,7 @@ describe("API routes security, concurrency, and regression checks", () => {
     db.insert(wordMastery)
       .values([
         {
-          profileId: 1,
+          profileId: activeProfileId,
           itemKey: "u2-orange",
           itemType: "word",
           unitId: "u2-colors",
@@ -382,7 +392,7 @@ describe("API routes security, concurrency, and regression checks", () => {
           lastPracticedAt: duePast,
         },
         {
-          profileId: 1,
+          profileId: activeProfileId,
           itemKey: "phonics-S",
           itemType: "phonics",
           unitId: "u1-greetings",
@@ -396,7 +406,9 @@ describe("API routes security, concurrency, and regression checks", () => {
       .onConflictDoNothing()
       .run();
 
-    const revRes = await reviewGet();
+    const revRes = await reviewGet(
+      new Request("http://localhost:3000/api/review", { headers: { Cookie: profileCookie } })
+    );
     expect(revRes.status).toBe(200);
     const revData = await revRes.json();
 
@@ -419,15 +431,11 @@ describe("API routes security, concurrency, and regression checks", () => {
     }
 
     const badPostRes = await reviewPost(
-      new Request("http://localhost:3000/api/review", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          itemKey: "nonexistent-fake-item",
-          itemType: "word",
-          unitId: "u1-greetings",
-          correct: true,
-        }),
+      jsonRequest("/api/review", {
+        itemKey: "nonexistent-fake-item",
+        itemType: "word",
+        unitId: "u1-greetings",
+        correct: true,
       })
     );
     expect(badPostRes.status).toBe(400);
@@ -473,13 +481,29 @@ describe("API routes security, concurrency, and regression checks", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
-  it("revokes old parent sessions when either PIN update endpoint is used", async () => {
+  it("revokes old parent sessions when either PIN update endpoint is used and blocks clearing the PIN", async () => {
     const getReport = (cookie: string) => reportGet(
       new Request("http://localhost:3000/api/report", { headers: { Cookie: cookie } })
     );
-    const setPin = await authPost(jsonRequest("/api/parent/auth", { action: "set_pin", pin: "test-pin" }, {
-      cookie: sessionCookie,
-    }));
+    expect((await authPost(jsonRequest(
+      "/api/parent/auth",
+      { action: "set_pin", currentPin: "parent1234", pin: "" },
+      { cookie: sessionCookie }
+    ))).status).toBe(400);
+    expect((await putSettings({ parentPin: "" }, sessionCookie)).status).toBe(400);
+
+    const wrongCurrent = await authPost(jsonRequest(
+      "/api/parent/auth",
+      { action: "set_pin", currentPin: "wrong-old", pin: "test-pin" },
+      { cookie: sessionCookie }
+    ));
+    expect(wrongCurrent.status).toBe(400);
+
+    const setPin = await authPost(jsonRequest(
+      "/api/parent/auth",
+      { action: "set_pin", currentPin: "parent1234", pin: "test-pin" },
+      { cookie: sessionCookie }
+    ));
     expect(setPin.status).toBe(200);
     const newCookie = setPin.headers.get("set-cookie")!.split(";")[0];
     expect((await getReport(sessionCookie)).status).toBe(401);
@@ -613,7 +637,13 @@ describe("API routes security, concurrency, and regression checks", () => {
     );
     expect(unverifiedCloudFeedRes.status).toBe(400);
     expect(expiredCloudFeedRes.status).toBe(400);
-    const unchangedProfile = (await (await profileGet()).json()).profile;
+    const unchangedProfile = (
+      await (
+        await profileGet(
+          new Request("http://localhost:3000/api/profile", { headers: { Cookie: profileCookie } })
+        )
+      ).json()
+    ).profile;
     expect(unchangedProfile).toMatchObject({
       totalStars: discountFeedData.profile.totalStars,
       petHunger: discountFeedData.profile.petHunger,
@@ -628,6 +658,7 @@ describe("API routes security, concurrency, and regression checks", () => {
     audioForm.set("voiceProofPurpose", "feed");
     const transcription = await sttPost(new Request("http://localhost:3000/api/speech/stt", {
       method: "POST",
+      headers: { Cookie: profileCookie },
       body: audioForm,
     }));
     expect(await transcription.clone().json()).toMatchObject({ ok: true, text: "Star Cake", voiceProof: expect.any(String) });
@@ -697,10 +728,13 @@ describe("API routes security, concurrency, and regression checks", () => {
         set: { starsEarned: 4 },
       })
       .run();
-    const backfillRes = await profileGet();
+    const backfillRes = await profileGet(
+      new Request("http://localhost:3000/api/profile", { headers: { Cookie: profileCookie } })
+    );
     const backfillData = await backfillRes.json();
     expect(backfillData.profile.ownedAccessories).toContain("sailor_cap");
-    const storedProfile = () => db.select().from(childProfiles).where(eq(childProfiles.id, 1)).get()!;
+    const storedProfile = () =>
+      db.select().from(childProfiles).where(eq(childProfiles.id, activeProfileId)).get()!;
     expect(storedProfile().ownedAccessoriesJson).not.toContain("sailor_cap");
 
     // 4. Select avatar skin (unlock dino-sky with stars)
@@ -720,9 +754,11 @@ describe("API routes security, concurrency, and regression checks", () => {
     // 5. Gentle daily hunger decay with safe floor >= 40
     db.update(childProfiles)
       .set({ lastActiveDate: "2020-01-01", petHunger: 70, petMood: 85 })
-      .where(eq(childProfiles.id, 1))
+      .where(eq(childProfiles.id, activeProfileId))
       .run();
-    const profRes = await profileGet();
+    const profRes = await profileGet(
+      new Request("http://localhost:3000/api/profile", { headers: { Cookie: profileCookie } })
+    );
     const profData = await profRes.json();
     expect(profData.profile.petHunger).toBe(40);
     expect(profData.profile.petMood).toBe(61);
@@ -738,7 +774,9 @@ describe("API routes security, concurrency, and regression checks", () => {
       .where(eq(wordMastery.itemKey, "u5-s1"))
       .run();
 
-    const revRes = await reviewGet();
+    const revRes = await reviewGet(
+      new Request("http://localhost:3000/api/review", { headers: { Cookie: profileCookie } })
+    );
     const revData = await revRes.json();
     const sentenceRev = revData.items.find((i: { itemKey: string }) => i.itemKey === "u5-s1");
     expect(sentenceRev?.itemType).toBe("sentence");
@@ -894,5 +932,190 @@ describe("API routes security, concurrency, and regression checks", () => {
     due();
     await submit(false);
     expect(row().wrongCount).toBe(baseline.wrongCount + 2);
+  });
+
+  it("isolates learning progress, chat sessions, voice proofs, and reports across child profiles", async () => {
+    const db = getDb();
+
+    // Duplicate nickname returns 409 with existingProfile summary
+    const dupRes = await profilesPost(
+      jsonRequest("/api/profiles", { nickname: " 苗苗 " }, { cookie: "" })
+    );
+    expect(dupRes.status).toBe(409);
+    const dupData = await dupRes.json();
+    expect(dupData).toMatchObject({
+      code: "duplicate_nickname",
+      existingProfile: { id: activeProfileId, nickname: "苗苗" },
+    });
+
+    // Without active profile cookie, progress mutation is rejected while onboarding STT (no purpose) works
+    expect(
+      (await progressPost(jsonRequest("/api/progress", { unitId: "u1-greetings", step: "story" }, { cookie: "" }))).status
+    ).toBe(400);
+
+    const prevSettings = db.select().from(appSettings).where(eq(appSettings.id, 1)).get()!;
+    db.update(appSettings)
+      .set({
+        sttEngine: "openai",
+        sttApiBaseUrl: "https://api.openai.com/v1",
+        sttApiKey: "sk-onboarding-test",
+      })
+      .where(eq(appSettings.id, 1))
+      .run();
+    try {
+      vi.spyOn(speechStt, "transcribeWithOpenAi").mockResolvedValueOnce("苗苗");
+      const nameForm = new FormData();
+      nameForm.set("audio", new Blob([new Uint8Array(64)], { type: "audio/wav" }), "name.wav");
+      nameForm.set("language", "zh");
+      const nameSttRes = await sttPost(
+        new Request("http://localhost:3000/api/speech/stt", { method: "POST", body: nameForm })
+      );
+      expect(await nameSttRes.json()).toMatchObject({ ok: true, text: "苗苗" });
+    } finally {
+      db.update(appSettings).set({
+        sttEngine: prevSettings.sttEngine,
+        sttApiBaseUrl: prevSettings.sttApiBaseUrl,
+        sttApiKey: prevSettings.sttApiKey,
+      }).where(eq(appSettings.id, 1)).run();
+    }
+
+    // Create second child "豆豆"
+    const doudouRes = await profilesPost(
+      jsonRequest("/api/profiles", { nickname: "豆豆" }, { cookie: "" })
+    );
+    expect(doudouRes.status).toBe(201);
+    const doudouData = await doudouRes.json();
+    const doudouId = doudouData.profile.id as number;
+    const doudouCookie = (doudouRes.headers.get("set-cookie") ?? "").split(";")[0];
+    expect(doudouId).not.toBe(activeProfileId);
+
+    // "豆豆" starts completely fresh (10 stars, 0 unit progress)
+    const doudouState = await (
+      await profileGet(new Request("http://localhost:3000/api/profile", { headers: { Cookie: doudouCookie } }))
+    ).json();
+    expect(doudouState.profile).toMatchObject({ id: doudouId, nickname: "豆豆", totalStars: 10 });
+    expect(doudouState.unitProgress).toEqual([]);
+
+    // Start a freetalk session under "苗苗" and ensure "豆豆" cannot continue it
+    const miaomiaoChat = await freeTalkPost(
+      jsonRequest("/api/agent/freetalk", { userText: "Hello Dino!" }, { cookie: profileCookie })
+    );
+    expect(miaomiaoChat.status).toBe(200);
+    const miaomiaoSessionId = (await miaomiaoChat.json()).sessionId as number;
+
+    const hijackFreeTalk = await freeTalkPost(
+      jsonRequest(
+        "/api/agent/freetalk",
+        { sessionId: miaomiaoSessionId, userText: "Hijack!" },
+        { cookie: doudouCookie }
+      )
+    );
+    expect(hijackFreeTalk.status).toBe(400);
+
+    // Select switch endpoint switches profile cleanly
+    const selectRes = await profilesSelectPost(
+      jsonRequest("/api/profiles/select", { profileId: activeProfileId }, { cookie: doudouCookie })
+    );
+    expect(selectRes.status).toBe(200);
+    expect(selectRes.headers.get("set-cookie")).toContain(`dinotalk_profile_id=${activeProfileId}`);
+    expect((await profilesGet(new Request("http://localhost:3000/api/profiles"))).status).toBe(200);
+  });
+
+  it("supports parent profile CRUD, per-profile reports, and cascading deletion with stale-cookie cleanup", async () => {
+    const db = getDb();
+    const unlockLatest = await authPost(
+      jsonRequest("/api/parent/auth", { action: "unlock", pin: "replacement-pin" }, { cookie: "" })
+    );
+    expect(unlockLatest.status).toBe(200);
+    const parentCookie = (unlockLatest.headers.get("set-cookie") ?? "").split(";")[0];
+
+    // Create child "乐乐" via parent console
+    const createRes = await parentProfilesPost(
+      jsonRequest(
+        "/api/parent/profiles",
+        { nickname: "乐乐", companionName: "Rex", dailyGoalMinutes: 20, eyeCareMinutes: 10 },
+        { cookie: parentCookie }
+      )
+    );
+    expect(createRes.status).toBe(201);
+    const lele = (await createRes.json()).profile;
+
+    // List all profiles
+    const listRes = await parentProfilesGet(
+      new Request("http://localhost:3000/api/parent/profiles", {
+        headers: { Cookie: `${parentCookie}; ${profileCookie}` },
+      })
+    );
+    expect(listRes.status).toBe(200);
+    const listData = await listRes.json();
+    expect(listData.activeProfileId).toBe(activeProfileId);
+    expect(listData.profiles.some((p: { id: number; nickname: string }) => p.id === lele.id && p.nickname === "乐乐")).toBe(true);
+
+    // Update profile (reject duplicate nickname, accept new name)
+    const dupEdit = await parentProfilePatch(
+      jsonRequest(`/api/parent/profiles/${lele.id}`, { nickname: "苗苗" }, { method: "PATCH", cookie: parentCookie }),
+      { params: Promise.resolve({ id: String(lele.id) }) }
+    );
+    expect(dupEdit.status).toBe(409);
+
+    const editRes = await parentProfilePatch(
+      jsonRequest(
+        `/api/parent/profiles/${lele.id}`,
+        { nickname: "乐乐宝", eyeCareMinutes: 25 },
+        { method: "PATCH", cookie: parentCookie }
+      ),
+      { params: Promise.resolve({ id: String(lele.id) }) }
+    );
+    expect(editRes.status).toBe(200);
+    expect((await editRes.json()).profile).toMatchObject({ nickname: "乐乐宝", eyeCareMinutes: 25 });
+
+    // Generate data for "乐乐宝" across unitProgress, wordMastery, dailyLogs, chatSessions, voiceProofs
+    const selRes = await profilesSelectPost(
+      jsonRequest("/api/profiles/select", { profileId: lele.id }, { cookie: "" })
+    );
+    const leleCookie = (selRes.headers.get("set-cookie") ?? "").split(";")[0];
+    await progressPost(
+      jsonRequest("/api/progress", { unitId: "u1-greetings", step: "story" }, { cookie: leleCookie })
+    );
+    await freeTalkPost(
+      jsonRequest("/api/agent/freetalk", { userText: "Hi Rex!" }, { cookie: leleCookie })
+    );
+    issueVoiceProof("Star Cake", lele.id, "feed");
+
+    // Per-profile report shows isolated profile data
+    const leleReportRes = await reportGet(
+      new Request(`http://localhost:3000/api/report?profileId=${lele.id}`, {
+        headers: { Cookie: parentCookie },
+      })
+    );
+    expect(leleReportRes.status).toBe(200);
+    const leleReport = await leleReportRes.json();
+    expect(leleReport.profile.nickname).toBe("乐乐宝");
+    expect(leleReport.recentSessions.length).toBe(1);
+
+    // Delete "乐乐宝" while leleCookie is attached -> cascades all tables and clears active profile cookie
+    const delRes = await parentProfileDelete(
+      new Request(`http://localhost:3000/api/parent/profiles/${lele.id}`, {
+        method: "DELETE",
+        headers: { Cookie: `${parentCookie}; ${leleCookie}` },
+      }),
+      { params: Promise.resolve({ id: String(lele.id) }) }
+    );
+    expect(delRes.status).toBe(200);
+    expect(delRes.headers.get("set-cookie")).toContain("Max-Age=0");
+
+    expect(db.select().from(childProfiles).where(eq(childProfiles.id, lele.id)).all()).toHaveLength(0);
+    expect(db.select().from(unitProgress).where(eq(unitProgress.profileId, lele.id)).all()).toHaveLength(0);
+    expect(db.select().from(wordMastery).where(eq(wordMastery.profileId, lele.id)).all()).toHaveLength(0);
+    expect(db.select().from(dailyLogs).where(eq(dailyLogs.profileId, lele.id)).all()).toHaveLength(0);
+    expect(db.select().from(voiceProofs).where(eq(voiceProofs.profileId, lele.id)).all()).toHaveLength(0);
+
+    // Stale cookie pointing to deleted profile yields needsProfile: true and clears cookie
+    const staleGet = await profileGet(
+      new Request("http://localhost:3000/api/profile", { headers: { Cookie: leleCookie } })
+    );
+    expect(staleGet.status).toBe(200);
+    expect(await staleGet.json()).toMatchObject({ needsProfile: true, profile: null });
+    expect(staleGet.headers.get("set-cookie")).toContain("Max-Age=0");
   });
 });

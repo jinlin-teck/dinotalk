@@ -438,7 +438,7 @@ export function RoleplayStageTab({
                 )}
               </div>
               <div className="text-sm text-emerald-50">
-                你真是个勇敢开口说英语的小探险家！可以再演一遍、去恐龙小屋喂零食，或直接去下一关~
+                {childNickname ? `${childNickname}，` : ""}你真是个勇敢开口说英语的小冠军！可以再演一遍、去恐龙小屋喂零食，或直接去下一关~
               </div>
             </div>
           </div>

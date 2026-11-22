@@ -20,6 +20,61 @@ test.beforeEach(async ({ page }) => {
     }
     Object.defineProperty(window, "SpeechRecognition", { value: TestRecognition });
   });
+  await page.route("**/api/profile", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        json: {
+          needsProfile: false,
+          profile: {
+            id: 999,
+            nickname: "测试宝贝",
+            avatarId: "dino-green",
+            companionName: "Dino",
+            totalStars: 10,
+            level: 1,
+            petHunger: 80,
+            petMood: 90,
+            equippedAccessoriesJson: "[]",
+            ownedAccessoriesJson: "[]",
+            equippedAccessories: [],
+            ownedAccessories: [],
+            ownedSkinIds: [],
+            dailyGoalMinutes: 15,
+            eyeCareMinutes: 15,
+            streakDays: 1,
+            lastActiveDate: "2026-11-22",
+            createdAt: "2026-11-22T00:00:00.000Z",
+            updatedAt: "2026-11-22T00:00:00.000Z",
+          },
+          profiles: [
+            {
+              id: 999,
+              nickname: "测试宝贝",
+              avatarId: "dino-green",
+              companionName: "Dino",
+              totalStars: 10,
+              level: 1,
+              streakDays: 1,
+              equippedAccessories: [],
+              lastActiveDate: "2026-11-22",
+            },
+          ],
+          todayLog: {
+            dateKey: "2026-11-22",
+            studySeconds: 0,
+            activitiesCompleted: 0,
+            wordsPracticed: 0,
+          },
+          dueReviewCount: 0,
+          unitProgress: [],
+        },
+      });
+    }
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.route("**/api/progress", (route) =>
+    route.fulfill({ json: { needsProfile: false, unitProgress: [], wordMastery: [] } })
+  );
   await page.route("**/api/speech/config", (route) => route.fulfill({ json: { sttMode: "browser" } }));
   await page.route("**/api/agent/freetalk", (route) => route.fulfill({
     json: {

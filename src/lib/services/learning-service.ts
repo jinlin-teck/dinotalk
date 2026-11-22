@@ -1,30 +1,40 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import {
   getUnitRewardAccessory,
   PET_ACCESSORIES,
   type UnitDef,
 } from "@/data/curriculum";
+import { todayDateKey } from "@/db";
 import type * as schema from "@/db/schema";
 import {
+  chatMessages,
+  chatSessions,
   childProfiles,
   dailyLogs,
+  unitProgress,
+  voiceProofs,
   wordMastery,
   type ChildProfile,
 } from "@/db/schema";
 import { calculateNextReview } from "@/lib/srs";
 import type {
   CurriculumItemType,
+  PublicProfileSummary,
   SerializedProfile,
   UnlockedAccessoryNotice,
 } from "@/types/api";
 
-export const DEFAULT_PROFILE_ID = 1;
+export const MAX_CHILD_PROFILES = 30;
 
 export type DbOrTx = Pick<
   BetterSQLite3Database<typeof schema>,
-  "select" | "insert" | "update"
+  "select" | "insert" | "update" | "delete"
 >;
+
+export function normalizeNickname(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ");
+}
 
 export function unitHasCurriculumItem(
   unit: UnitDef,
@@ -54,15 +64,124 @@ export function serializeProfile(row: ChildProfile): SerializedProfile {
   };
 }
 
+export function toPublicProfileSummary(row: ChildProfile): PublicProfileSummary {
+  return {
+    id: row.id,
+    nickname: row.nickname,
+    avatarId: row.avatarId,
+    companionName: row.companionName,
+    totalStars: row.totalStars,
+    level: row.level,
+    streakDays: row.streakDays,
+    equippedAccessories: parseJsonStringArray(row.equippedAccessoriesJson),
+    lastActiveDate: row.lastActiveDate,
+  };
+}
+
+export function listPublicProfileSummaries(
+  db: Pick<DbOrTx, "select">
+): PublicProfileSummary[] {
+  return db
+    .select()
+    .from(childProfiles)
+    .orderBy(asc(childProfiles.id))
+    .all()
+    .map(toPublicProfileSummary);
+}
+
+export function findProfileByNickname(
+  db: Pick<DbOrTx, "select">,
+  nickname: string,
+  excludeId?: number
+): ChildProfile | undefined {
+  const targetLower = normalizeNickname(nickname).toLowerCase();
+  if (!targetLower) return undefined;
+  const rows = db.select().from(childProfiles).orderBy(asc(childProfiles.id)).all();
+  return rows.find(
+    (row) => row.id !== excludeId && normalizeNickname(row.nickname).toLowerCase() === targetLower
+  );
+}
+
+export function createChildProfile(
+  tx: Pick<DbOrTx, "insert" | "select">,
+  input: {
+    nickname: string;
+    companionName?: string;
+    dailyGoalMinutes?: number;
+    eyeCareMinutes?: number;
+    now?: Date;
+  }
+): ChildProfile {
+  const now = input.now ?? new Date();
+  const nowIso = now.toISOString();
+  const today = todayDateKey(now);
+  const nickname = normalizeNickname(input.nickname);
+  const companionName = normalizeNickname(input.companionName ?? "Dino") || "Dino";
+
+  const res = tx
+    .insert(childProfiles)
+    .values({
+      nickname,
+      avatarId: "dino-green",
+      companionName,
+      totalStars: 10,
+      level: 1,
+      petHunger: 80,
+      petMood: 90,
+      equippedAccessoriesJson: "[]",
+      ownedAccessoriesJson: "[]",
+      ownedSkinIdsJson: "[]",
+      dailyGoalMinutes: input.dailyGoalMinutes ?? 15,
+      eyeCareMinutes: input.eyeCareMinutes ?? 15,
+      streakDays: 1,
+      lastActiveDate: today,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    })
+    .run();
+
+  const createdId = Number(res.lastInsertRowid);
+  return tx.select().from(childProfiles).where(eq(childProfiles.id, createdId)).get()!;
+}
+
+export function deleteChildProfileCascade(tx: DbOrTx, profileId: number): boolean {
+  const existing = tx
+    .select({ id: childProfiles.id })
+    .from(childProfiles)
+    .where(eq(childProfiles.id, profileId))
+    .get();
+  if (!existing) return false;
+
+  const sessions = tx
+    .select({ id: chatSessions.id })
+    .from(chatSessions)
+    .where(eq(chatSessions.profileId, profileId))
+    .all();
+  const sessionIds = sessions.map((s) => s.id);
+  for (let i = 0; i < sessionIds.length; i += 500) {
+    tx.delete(chatMessages)
+      .where(inArray(chatMessages.sessionId, sessionIds.slice(i, i + 500)))
+      .run();
+  }
+
+  tx.delete(chatSessions).where(eq(chatSessions.profileId, profileId)).run();
+  tx.delete(unitProgress).where(eq(unitProgress.profileId, profileId)).run();
+  tx.delete(wordMastery).where(eq(wordMastery.profileId, profileId)).run();
+  tx.delete(dailyLogs).where(eq(dailyLogs.profileId, profileId)).run();
+  tx.delete(voiceProofs).where(eq(voiceProofs.profileId, profileId)).run();
+  tx.delete(childProfiles).where(eq(childProfiles.id, profileId)).run();
+  return true;
+}
+
 export function addDailyLogStats(
-  tx: DbOrTx,
+  tx: Pick<DbOrTx, "insert">,
   dateKey: string,
   delta: {
     studySeconds?: number;
     activitiesCompleted?: number;
     wordsPracticed?: number;
   },
-  profileId = DEFAULT_PROFILE_ID
+  profileId: number
 ): void {
   const studySeconds = Math.max(0, Math.floor(delta.studySeconds ?? 0));
   const activitiesCompleted = Math.max(0, Math.floor(delta.activitiesCompleted ?? 0));
@@ -88,18 +207,18 @@ export function addDailyLogStats(
 }
 
 export function upsertWordMasteryItem(
-  tx: DbOrTx,
+  tx: Pick<DbOrTx, "select" | "insert" | "update">,
   params: {
     itemKey: string;
     itemType: CurriculumItemType;
     unitId: string;
     correct: boolean;
     now: Date;
-    profileId?: number;
+    profileId: number;
     reviewMissPending?: boolean;
   }
 ) {
-  const profileId = params.profileId ?? DEFAULT_PROFILE_ID;
+  const { profileId } = params;
   const nowIso = params.now.toISOString();
 
   const existing = tx
@@ -146,15 +265,15 @@ export function upsertWordMasteryItem(
 }
 
 export function awardStarsAndMood(
-  tx: DbOrTx,
+  tx: Pick<DbOrTx, "select" | "update">,
   params: {
     starsDelta: number;
     moodDelta?: number;
     nowIso: string;
-    profileId?: number;
+    profileId: number;
   }
 ): ChildProfile | undefined {
-  const profileId = params.profileId ?? DEFAULT_PROFILE_ID;
+  const { profileId } = params;
   const starsDelta = Math.max(0, Math.floor(params.starsDelta));
   const moodDelta = Math.max(0, Math.floor(params.moodDelta ?? 0));
 
@@ -174,19 +293,19 @@ export function awardStarsAndMood(
 }
 
 export function unlockUnitAccessoryIfCompleted(
-  tx: DbOrTx,
+  tx: Pick<DbOrTx, "select" | "update">,
   params: {
     unitId: string;
     starsEarned: number;
     nowIso: string;
-    profileId?: number;
+    profileId: number;
   }
 ): UnlockedAccessoryNotice | null {
   if (params.starsEarned < 4) return null;
   const reward = getUnitRewardAccessory(params.unitId);
   if (!reward) return null;
 
-  const profileId = params.profileId ?? DEFAULT_PROFILE_ID;
+  const { profileId } = params;
   const profile = tx
     .select()
     .from(childProfiles)

@@ -19,22 +19,22 @@ import { LlmSettingsTab } from "@/components/parent/LlmSettingsTab";
 import { SpeechSettingsTab } from "@/components/parent/SpeechSettingsTab";
 import { ProfileSettingsTab } from "@/components/parent/ProfileSettingsTab";
 import { LearningReportTab } from "@/components/parent/LearningReportTab";
-import type { ReportData, SanitizedSettings } from "@/types/api";
+import type { ParentManagedProfile, ReportData, SanitizedSettings } from "@/types/api";
 
 export default function ParentConsolePage() {
   const [unlocked, setUnlocked] = useState(false);
   const [tab, setTab] = useState<"llm" | "speech" | "profile" | "report">("llm");
   const [settings, setSettings] = useState<SanitizedSettings | null>(null);
   const [savedLlmBaseUrl, setSavedLlmBaseUrl] = useState("");
+
+  const [profiles, setProfiles] = useState<ParentManagedProfile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<number | null>(null);
+  const [selectedReportProfileId, setSelectedReportProfileId] = useState<number | null>(null);
   const [report, setReport] = useState<ReportData | null>(null);
 
   const [llmKeyDraft, setLlmKeyDraft] = useState("");
   const [ttsKeyDraft, setTtsKeyDraft] = useState("");
   const [sttKeyDraft, setSttKeyDraft] = useState("");
-  const [nicknameDraft, setNicknameDraft] = useState("");
-  const [companionDraft, setCompanionDraft] = useState("");
-  const [eyeCareDraft, setEyeCareDraft] = useState(15);
-  const [dailyGoalDraft, setDailyGoalDraft] = useState(15);
 
   const [saving, setSaving] = useState(false);
   const [testingTarget, setTestingTarget] = useState<"llm" | "tts" | "stt" | null>(null);
@@ -48,41 +48,75 @@ export default function ParentConsolePage() {
 
   const speech = useSpeech();
 
-  const loadAll = useCallback(async () => {
-    try {
-      const [setRes, repRes] = await Promise.all([
-        fetch("/api/settings", { cache: "no-store" }),
-        fetch("/api/report", { cache: "no-store" }),
-      ]);
-      if (setRes.status === 401 || repRes.status === 401) {
-        setUnlocked(false);
-        return;
-      }
-      if (setRes.ok) {
-        const sd = await setRes.json();
-        setSettings(sd.settings);
-        setSavedLlmBaseUrl(sd.settings?.llmBaseUrl ?? "");
-      }
-      if (repRes.ok) {
-        const rd = (await repRes.json()) as ReportData;
-        setReport(rd);
-        if (rd.profile) {
-          setNicknameDraft(rd.profile.nickname);
-          setCompanionDraft(rd.profile.companionName);
-          setEyeCareDraft(rd.profile.eyeCareMinutes);
-          setDailyGoalDraft(rd.profile.dailyGoalMinutes);
-        }
-      }
-    } catch {
-      setNotice({ ok: false, text: "加载配置或成长报告失败，请刷新重试" });
+  const fetchReportForProfile = useCallback(async (profileId: number | null) => {
+    const query = profileId !== null ? `?profileId=${profileId}` : "";
+    const repRes = await fetch(`/api/report${query}`, { cache: "no-store" });
+    if (repRes.status === 401) {
+      setUnlocked(false);
+      return;
+    }
+    if (repRes.ok) {
+      const rd = (await repRes.json()) as ReportData;
+      setReport(rd);
     }
   }, []);
 
+  const loadAll = useCallback(
+    async (preferredProfileId?: number | null) => {
+      try {
+        const [setRes, profRes] = await Promise.all([
+          fetch("/api/settings", { cache: "no-store" }),
+          fetch("/api/parent/profiles", { cache: "no-store" }),
+        ]);
+        if (setRes.status === 401 || profRes.status === 401) {
+          setUnlocked(false);
+          return;
+        }
+        if (setRes.ok) {
+          const sd = await setRes.json();
+          setSettings(sd.settings);
+          setSavedLlmBaseUrl(sd.settings?.llmBaseUrl ?? "");
+        }
+
+        let targetReportId: number | null = null;
+        if (profRes.ok) {
+          const pd = (await profRes.json()) as {
+            profiles?: ParentManagedProfile[];
+            activeProfileId?: number | null;
+          };
+          const list = pd.profiles ?? [];
+          const activeId = pd.activeProfileId ?? null;
+          setProfiles(list);
+          setActiveProfileId(activeId);
+
+          const candidateIds = [
+            preferredProfileId,
+            selectedReportProfileId,
+            activeId,
+            list[0]?.id ?? null,
+          ];
+          targetReportId =
+            candidateIds.find(
+              (id): id is number =>
+                typeof id === "number" && list.some((item) => item.id === id)
+            ) ?? null;
+          setSelectedReportProfileId(targetReportId);
+        }
+
+        await fetchReportForProfile(targetReportId);
+      } catch {
+        setNotice({ ok: false, text: "加载配置或成长报告失败，请刷新重试" });
+      }
+    },
+    [fetchReportForProfile, selectedReportProfileId]
+  );
+
   useEffect(() => {
     if (unlocked) {
-      loadAll();
+      void loadAll();
     }
-  }, [unlocked, loadAll]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlocked]);
 
   const applyPreset = (presetId: string) => {
     const preset = LLM_PRESETS.find((p) => p.id === presetId);
@@ -155,70 +189,150 @@ export default function ParentConsolePage() {
     }
   };
 
-  const handleSaveProfile = async () => {
-    if (saving) return;
+  const handleCreateProfile = async (input: {
+    nickname: string;
+    companionName: string;
+    dailyGoalMinutes: number;
+    eyeCareMinutes: number;
+  }): Promise<boolean> => {
+    if (saving) return false;
     setSaving(true);
     setNotice(null);
     try {
-      const res = await fetch("/api/profile", {
-        method: "PATCH",
+      const res = await fetch("/api/parent/profiles", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "update_profile",
-          nickname: nicknameDraft,
-          companionName: companionDraft,
-          dailyGoalMinutes: dailyGoalDraft,
-          eyeCareMinutes: eyeCareDraft,
-        }),
+        body: JSON.stringify(input),
       });
       if (res.status === 401) {
         setUnlocked(false);
-        return;
+        return false;
       }
       const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        await loadAll();
-        setNotice({ ok: true, text: "孩子档案与护眼设置已更新！" });
-      } else {
-        setNotice({ ok: false, text: data.error || "保存档案失败" });
+      if (res.ok && data.profile) {
+        await loadAll(data.profile.id);
+        setNotice({ ok: true, text: `已新建「${data.profile.nickname}」的学习档案！` });
+        return true;
       }
+      setNotice({ ok: false, text: data.error || "新建档案失败" });
+      return false;
     } catch {
-      setNotice({ ok: false, text: "网络异常，档案更新失败" });
+      setNotice({ ok: false, text: "网络异常，新建档案失败" });
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
-  const handleSetPin = async (pin: string) => {
-    if (saving) return;
+  const handleUpdateProfile = async (
+    profileId: number,
+    input: {
+      nickname: string;
+      companionName: string;
+      dailyGoalMinutes: number;
+      eyeCareMinutes: number;
+    }
+  ): Promise<boolean> => {
+    if (saving) return false;
+    setSaving(true);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/parent/profiles/${profileId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (res.status === 401) {
+        setUnlocked(false);
+        return false;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.profile) {
+        await loadAll(selectedReportProfileId);
+        setNotice({ ok: true, text: `已更新「${data.profile.nickname}」的档案与护眼设置！` });
+        return true;
+      }
+      setNotice({ ok: false, text: data.error || "保存档案失败" });
+      return false;
+    } catch {
+      setNotice({ ok: false, text: "网络异常，档案更新失败" });
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteProfile = async (profileId: number): Promise<boolean> => {
+    if (saving) return false;
+    setSaving(true);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/parent/profiles/${profileId}`, {
+        method: "DELETE",
+      });
+      if (res.status === 401) {
+        setUnlocked(false);
+        return false;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        await loadAll(selectedReportProfileId === profileId ? null : selectedReportProfileId);
+        setNotice({ ok: true, text: "该学习档案及其相关记录已永久删除。" });
+        return true;
+      }
+      setNotice({ ok: false, text: data.error || "删除档案失败" });
+      return false;
+    } catch {
+      setNotice({ ok: false, text: "网络异常，删除档案失败" });
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSelectReportProfile = async (profileId: number) => {
+    setSelectedReportProfileId(profileId);
+    await fetchReportForProfile(profileId);
+  };
+
+  const handleViewReportFromProfile = (profileId: number) => {
+    setNotice(null);
+    setTestResult(null);
+    setSelectedReportProfileId(profileId);
+    void fetchReportForProfile(profileId);
+    setTab("report");
+  };
+
+  const handleChangePassword = async (
+    currentPin: string,
+    newPin: string
+  ): Promise<boolean> => {
+    if (saving) return false;
     setSaving(true);
     setNotice(null);
     try {
       const res = await fetch("/api/parent/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "set_pin", pin }),
+        body: JSON.stringify({ action: "set_pin", currentPin, pin: newPin }),
       });
       if (res.status === 401) {
         setUnlocked(false);
-        return;
+        return false;
       }
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         if (settings) {
-          setSettings({ ...settings, hasParentPin: Boolean(data.hasParentPin) });
+          setSettings({ ...settings, hasParentPin: true });
         }
-        setNotice({
-          ok: true,
-          text: data.hasParentPin
-            ? "家长自定义密码已加密保存！"
-            : "已清除密码锁，恢复为算术题验证。",
-        });
-      } else {
-        setNotice({ ok: false, text: data.error || "设置密码失败" });
+        setNotice({ ok: true, text: "家长密码已加密更新，其他会话已自动失效！" });
+        return true;
       }
+      setNotice({ ok: false, text: data.error || "修改密码失败" });
+      return false;
     } catch {
-      setNotice({ ok: false, text: "网络异常，密码设置失败" });
+      setNotice({ ok: false, text: "网络异常，密码修改失败" });
+      return false;
     } finally {
       setSaving(false);
     }
@@ -318,6 +432,7 @@ export default function ParentConsolePage() {
             <button
               type="button"
               onClick={handleLogout}
+              data-testid="parent-logout-btn"
               className="min-h-[36px] px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold inline-flex items-center gap-1"
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -333,7 +448,7 @@ export default function ParentConsolePage() {
           {[
             { id: "llm", label: "AI 大模型设置", icon: Bot },
             { id: "speech", label: "语音听读配置", icon: Volume2 },
-            { id: "profile", label: "档案与护眼", icon: UserCheck },
+            { id: "profile", label: "用户档案与密码", icon: UserCheck },
             { id: "report", label: "学习成长报告", icon: BarChart3 },
           ].map((t) => {
             const Icon = t.icon;
@@ -443,22 +558,25 @@ export default function ParentConsolePage() {
 
         {tab === "profile" && (
           <ProfileSettingsTab
-            nicknameDraft={nicknameDraft}
-            companionDraft={companionDraft}
-            dailyGoalDraft={dailyGoalDraft}
-            eyeCareDraft={eyeCareDraft}
-            hasParentPin={Boolean(settings?.hasParentPin)}
+            profiles={profiles}
+            activeProfileId={activeProfileId}
             saving={saving}
-            onChangeNickname={setNicknameDraft}
-            onChangeCompanion={setCompanionDraft}
-            onChangeDailyGoal={setDailyGoalDraft}
-            onChangeEyeCare={setEyeCareDraft}
-            onSaveProfile={handleSaveProfile}
-            onSetPin={handleSetPin}
+            onCreateProfile={handleCreateProfile}
+            onUpdateProfile={handleUpdateProfile}
+            onDeleteProfile={handleDeleteProfile}
+            onViewReport={handleViewReportFromProfile}
+            onChangePassword={handleChangePassword}
           />
         )}
 
-        {tab === "report" && report && <LearningReportTab report={report} />}
+        {tab === "report" && (
+          <LearningReportTab
+            profiles={profiles}
+            selectedProfileId={selectedReportProfileId}
+            onSelectProfile={handleSelectReportProfile}
+            report={report}
+          />
+        )}
       </div>
     </div>
   );

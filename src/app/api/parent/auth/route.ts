@@ -1,19 +1,18 @@
 import { NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { appSettings } from "@/db/schema";
 import {
   buildParentSessionCookie,
   clearParentAuthFailures,
-  createMathChallenge,
   hashParentPin,
   isParentAuthenticated,
   isParentAuthRateLimited,
   recordParentAuthFailure,
   requireParentAuth,
   setParentSessionCookie,
-  verifyMathChallenge,
+  validateParentPinFormat,
   verifyParentPin,
 } from "@/lib/auth/parent-session";
 import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
@@ -26,34 +25,40 @@ export async function GET(request: Request) {
   const db = getDb();
   const settings = db.select().from(appSettings).where(eq(appSettings.id, 1)).get();
   const hasParentPin = Boolean(settings?.parentPin?.trim());
+  const needsPasswordSetup = !hasParentPin;
 
   if (settings && isParentAuthenticated(request, settings.parentSessionVersion)) {
     return NextResponse.json({
       authenticated: true,
       hasParentPin,
+      needsPasswordSetup,
     });
   }
 
   return NextResponse.json({
     authenticated: false,
     hasParentPin,
-    challenge: hasParentPin ? undefined : createMathChallenge(),
+    needsPasswordSetup,
   });
 }
 
 const AuthActionSchema = z.discriminatedUnion("action", [
   z.object({
+    action: z.literal("setup_pin"),
+    pin: z.string().max(40),
+    confirmPin: z.string().max(40),
+  }),
+  z.object({
     action: z.literal("unlock"),
-    pin: z.string().max(40).optional(),
-    challengeToken: z.string().max(400).optional(),
-    answer: z.number().finite().optional(),
+    pin: z.string().max(40),
   }),
   z.object({
     action: z.literal("logout"),
   }),
   z.object({
     action: z.literal("set_pin"),
-    pin: z.string().max(20),
+    currentPin: z.string().max(40).optional(),
+    pin: z.string().max(40),
   }),
 ]);
 
@@ -81,16 +86,68 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "系统配置未初始化" }, { status: 404 });
   }
 
+  if (data.action === "setup_pin") {
+    const pinCheck = validateParentPinFormat(data.pin);
+    if (!pinCheck.ok) {
+      return NextResponse.json({ error: pinCheck.error }, { status: 400 });
+    }
+    if (pinCheck.normalized !== data.confirmPin.trim()) {
+      return NextResponse.json({ error: "两次输入的家长密码不一致" }, { status: 400 });
+    }
+
+    const storedValue = hashParentPin(pinCheck.normalized);
+    const nextVersion = settings.parentSessionVersion + 1;
+    const update = db
+      .update(appSettings)
+      .set({
+        parentPin: storedValue,
+        parentSessionVersion: nextVersion,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(
+        and(
+          eq(appSettings.id, 1),
+          sql`trim(${appSettings.parentPin}) = ''`,
+          eq(appSettings.parentSessionVersion, settings.parentSessionVersion)
+        )
+      )
+      .run();
+
+    if (Number(update.changes) === 0) {
+      return NextResponse.json(
+        { error: "家长密码已设置，请直接输入密码解锁" },
+        { status: 409 }
+      );
+    }
+
+    clearParentAuthFailures(getRequestSourceKey(request));
+    const response = NextResponse.json({
+      ok: true,
+      authenticated: true,
+      hasParentPin: true,
+      needsPasswordSetup: false,
+    });
+    return setParentSessionCookie(response, request, nextVersion);
+  }
+
   if (data.action === "set_pin") {
     const authError = requireParentAuth(request, settings.parentSessionVersion);
     if (authError) return authError;
 
-    const trimmedPin = data.pin.trim();
-    if (trimmedPin !== "" && trimmedPin.length < 4) {
-      return NextResponse.json({ error: "家长密码至少需要 4 位字符" }, { status: 400 });
+    const pinCheck = validateParentPinFormat(data.pin);
+    if (!pinCheck.ok) {
+      return NextResponse.json({ error: pinCheck.error }, { status: 400 });
     }
 
-    const storedValue = trimmedPin ? hashParentPin(trimmedPin) : "";
+    const existingStoredPin = settings.parentPin.trim();
+    if (existingStoredPin) {
+      const currentCandidate = data.currentPin?.trim() ?? "";
+      if (!currentCandidate || !verifyParentPin(currentCandidate, existingStoredPin)) {
+        return NextResponse.json({ error: "当前家长密码不正确" }, { status: 400 });
+      }
+    }
+
+    const storedValue = hashParentPin(pinCheck.normalized);
     const nextVersion = settings.parentSessionVersion + 1;
     const update = db
       .update(appSettings)
@@ -109,7 +166,7 @@ export async function POST(request: Request) {
     }
     const response = NextResponse.json({
       ok: true,
-      hasParentPin: Boolean(storedValue),
+      hasParentPin: true,
     });
     return setParentSessionCookie(response, request, nextVersion);
   }
@@ -124,47 +181,39 @@ export async function POST(request: Request) {
   }
 
   const storedPin = settings.parentPin.trim();
-  const hasParentPin = Boolean(storedPin);
-
-  if (hasParentPin) {
-    const candidate = data.pin?.trim() ?? "";
-    if (!candidate || !verifyParentPin(candidate, storedPin)) {
-      recordParentAuthFailure(sourceKey);
-      return NextResponse.json({ error: "家长密码不正确，请再试一次" }, { status: 401 });
-    }
-
-    // Upgrade legacy plaintext PIN to scrypt hash seamlessly
-    if (!storedPin.startsWith("scrypt:")) {
-      db.update(appSettings)
-        .set({
-          parentPin: hashParentPin(candidate),
-          updatedAt: new Date().toISOString(),
-        })
-        .where(and(eq(appSettings.id, 1), eq(appSettings.parentPin, settings.parentPin)))
-        .run();
-    }
-  } else {
-    if (
-      !data.challengeToken ||
-      typeof data.answer !== "number" ||
-      !verifyMathChallenge(data.challengeToken, data.answer)
-    ) {
-      recordParentAuthFailure(sourceKey);
-      return NextResponse.json(
-        {
-          error: "算错啦或题目已过期，请再算一遍进入家长模式哦~",
-          challenge: createMathChallenge(),
-        },
-        { status: 401 }
-      );
-    }
+  if (!storedPin) {
+    return NextResponse.json(
+      {
+        error: "尚未设置家长密码，请先设置初始密码",
+        needsPasswordSetup: true,
+      },
+      { status: 400 }
+    );
   }
 
-  clearParentAuthFailures();
+  const candidate = data.pin.trim();
+  if (!candidate || !verifyParentPin(candidate, storedPin)) {
+    recordParentAuthFailure(sourceKey);
+    return NextResponse.json({ error: "家长密码不正确，请再试一次" }, { status: 401 });
+  }
+
+  // Upgrade legacy plaintext PIN to scrypt hash seamlessly
+  if (!storedPin.startsWith("scrypt:")) {
+    db.update(appSettings)
+      .set({
+        parentPin: hashParentPin(candidate),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(and(eq(appSettings.id, 1), eq(appSettings.parentPin, settings.parentPin)))
+      .run();
+  }
+
+  clearParentAuthFailures(sourceKey);
   const res = NextResponse.json({
     ok: true,
     authenticated: true,
-    hasParentPin,
+    hasParentPin: true,
+    needsPasswordSetup: false,
   });
   return setParentSessionCookie(res, request, settings.parentSessionVersion);
 }

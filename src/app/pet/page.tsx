@@ -10,6 +10,7 @@ import type { EmotionMood } from "@/data/curriculum/types";
 import { scorePronunciation } from "@/lib/speech/pronunciation-scorer";
 import { soundEffects } from "@/lib/sound-effects";
 import { useSpeech } from "@/hooks/useSpeech";
+import type { PublicProfileSummary } from "@/types/api";
 
 interface FullProfile extends ProfileSummary {
   avatarId: string;
@@ -28,6 +29,8 @@ const DINO_CHATTER: Array<{ en: string; zh: string; mood: EmotionMood }> = [
 
 export default function PetHousePage() {
   const [profile, setProfile] = useState<FullProfile | null>(null);
+  const [profiles, setProfiles] = useState<PublicProfileSummary[]>([]);
+  const [needsProfile, setNeedsProfile] = useState(false);
   const [dueReviewCount, setDueReviewCount] = useState(0);
   const [mood, setMood] = useState<EmotionMood>("happy");
   const [messageZh, setMessageZh] = useState<string>(
@@ -40,12 +43,14 @@ export default function PetHousePage() {
   const speech = useSpeech();
 
   const loadProfile = useCallback(async () => {
-    const res = await fetch("/api/profile");
+    const res = await fetch("/api/profile", { cache: "no-store" });
     if (!res.ok) return;
     const data = await res.json();
-    setProfile(data.profile);
+    setProfiles(data.profiles ?? []);
+    setNeedsProfile(Boolean(data.needsProfile));
+    setProfile(data.profile ?? null);
     setDueReviewCount(data.dueReviewCount ?? 0);
-    if ((data.profile?.petHunger ?? 80) < 60) {
+    if (data.profile && (data.profile.petHunger ?? 80) < 60) {
       setMood("idle");
       setMessageZh("咕噜噜~ Dino 有点饿啦！I'm hungry! An apple, please!");
     }
@@ -60,7 +65,11 @@ export default function PetHousePage() {
     setChatterIdx((i) => i + 1);
     setMood(line.mood);
     soundEffects.playStar();
-    setMessageZh(`${line.en}（${line.zh}）`);
+    const zhLine =
+      line.mood === "cheering" && profile?.nickname && line.zh.includes("小探险家")
+        ? `${profile.nickname}，你是超厉害的英语小冠军！`
+        : line.zh;
+    setMessageZh(`${line.en}（${zhLine}）`);
     void speech.speak(line.en, { lang: "en" });
     window.setTimeout(() => setMood("happy"), 2200);
   };
@@ -182,7 +191,15 @@ export default function PetHousePage() {
   const isHungry = (profile?.petHunger ?? 80) < 60;
 
   return (
-    <AppShell profile={profile} dueReviewCount={dueReviewCount}>
+    <AppShell
+      profile={profile}
+      profiles={profiles}
+      needsProfile={needsProfile}
+      onProfileChanged={() => {
+        void loadProfile();
+      }}
+      dueReviewCount={dueReviewCount}
+    >
       <div className="space-y-7">
         {/* Dino Stage */}
         <section className="rounded-3xl bg-gradient-to-br from-amber-50 via-white to-emerald-50 border-4 border-emerald-200 p-5 sm:p-7 shadow-md">

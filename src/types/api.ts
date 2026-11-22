@@ -22,6 +22,25 @@ export interface SerializedProfile {
   updatedAt: string;
 }
 
+export interface PublicProfileSummary {
+  id: number;
+  nickname: string;
+  avatarId: string;
+  companionName: string;
+  totalStars: number;
+  level: number;
+  streakDays: number;
+  equippedAccessories: string[];
+  lastActiveDate: string;
+}
+
+export interface ParentManagedProfile extends SerializedProfile {
+  completedUnitsCount: number;
+  totalUnitStars: number;
+  masteredItemCount: number;
+  totalStudyMinutes: number;
+}
+
 export interface UnitProgressRow {
   id?: number;
   profileId?: number;
@@ -80,6 +99,7 @@ export interface TodayLogSummary {
 
 export interface ReportData {
   profile: {
+    id: number;
     nickname: string;
     companionName: string;
     totalStars: number;

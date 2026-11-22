@@ -2,14 +2,19 @@ import { NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb, todayDateKey } from "@/db";
-import { wordMastery } from "@/db/schema";
+import { childProfiles, wordMastery } from "@/db/schema";
 import { getAllPhonics, getAllSentences, getAllVocab, getUnitById } from "@/data/curriculum";
 import { isDueForReview, sortReviewQueue } from "@/lib/srs";
+import {
+  buildNoActiveProfileResponse,
+  clearActiveProfileCookie,
+  extractProfileIdFromRequest,
+  resolveActiveProfile,
+} from "@/lib/auth/profile-session";
 import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
 import {
   addDailyLogStats,
   awardStarsAndMood,
-  DEFAULT_PROFILE_ID,
   unitHasCurriculumItem,
   upsertWordMasteryItem,
 } from "@/lib/services/learning-service";
@@ -45,13 +50,27 @@ function pickTwoDistinct<T>(pool: T[]): T[] {
   return Array.from(picked, (index) => pool[index]);
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const db = getDb();
+  const activeProfile = resolveActiveProfile(db, request);
+  if (!activeProfile) {
+    const res = NextResponse.json({
+      needsProfile: true,
+      items: [],
+      isWarmup: true,
+      dueCount: 0,
+    });
+    if (extractProfileIdFromRequest(request) !== null) {
+      clearActiveProfileCookie(res, request);
+    }
+    return res;
+  }
+
   const now = new Date();
   const allRows = db
     .select()
     .from(wordMastery)
-    .where(eq(wordMastery.profileId, DEFAULT_PROFILE_ID))
+    .where(eq(wordMastery.profileId, activeProfile.id))
     .all();
 
   const vocabList = getAllVocab();
@@ -95,6 +114,7 @@ export async function GET() {
         };
       });
       return NextResponse.json({
+        needsProfile: false,
         items,
         isWarmup: true,
         dueCount: 0,
@@ -187,6 +207,7 @@ export async function GET() {
   }
 
   return NextResponse.json({
+    needsProfile: false,
     items: enriched,
     isWarmup,
     dueCount: dueRows.length,
@@ -217,54 +238,76 @@ export async function POST(request: Request) {
   }
 
   const db = getDb();
+  const activeProfile = resolveActiveProfile(db, request);
+  if (!activeProfile) {
+    return buildNoActiveProfileResponse();
+  }
+  const profileId = activeProfile.id;
+
   const now = new Date();
   const nowIso = now.toISOString();
   const today = todayDateKey(now);
 
-  const outcome = db.transaction((tx) => {
-    const existingRow = tx
-      .select({
-        nextReviewAt: wordMastery.nextReviewAt,
-        masteryLevel: wordMastery.masteryLevel,
-        reviewMissPending: wordMastery.reviewMissPending,
-      })
-      .from(wordMastery)
-      .where(
-        and(
-          eq(wordMastery.profileId, DEFAULT_PROFILE_ID),
-          eq(wordMastery.itemKey, itemKey)
-        )
-      )
-      .get();
-    const isDue = isDueForReview(existingRow?.nextReviewAt, now);
-    if (!correct && existingRow && (!isDue || existingRow.reviewMissPending)) {
-      return { ...existingRow, starsAwarded: 0 };
-    }
+  const outcome = db.transaction(
+    (tx) => {
+      const profileRow = tx
+        .select({ id: childProfiles.id })
+        .from(childProfiles)
+        .where(eq(childProfiles.id, profileId))
+        .get();
+      if (!profileRow) return null;
 
-    const starsAwarded = correct && isDue ? 1 : 0;
-    const nextSrs = upsertWordMasteryItem(tx, {
-      itemKey,
-      itemType,
-      unitId,
-      correct,
-      now,
-      reviewMissPending: !correct,
-    });
+      const existingRow = tx
+        .select({
+          nextReviewAt: wordMastery.nextReviewAt,
+          masteryLevel: wordMastery.masteryLevel,
+          reviewMissPending: wordMastery.reviewMissPending,
+        })
+        .from(wordMastery)
+        .where(and(eq(wordMastery.profileId, profileId), eq(wordMastery.itemKey, itemKey)))
+        .get();
+      const isDue = isDueForReview(existingRow?.nextReviewAt, now);
+      if (!correct && existingRow && (!isDue || existingRow.reviewMissPending)) {
+        return { ...existingRow, starsAwarded: 0 };
+      }
 
-    if (starsAwarded > 0) {
-      awardStarsAndMood(tx, {
-        starsDelta: starsAwarded,
-        nowIso,
+      const starsAwarded = correct && isDue ? 1 : 0;
+      const nextSrs = upsertWordMasteryItem(tx, {
+        itemKey,
+        itemType,
+        unitId,
+        correct,
+        now,
+        profileId,
+        reviewMissPending: !correct,
       });
-    }
 
-    addDailyLogStats(tx, today, {
-      wordsPracticed: 1,
-      studySeconds: 15,
-    });
+      if (starsAwarded > 0) {
+        awardStarsAndMood(tx, {
+          starsDelta: starsAwarded,
+          nowIso,
+          profileId,
+        });
+      }
 
-    return { ...nextSrs, starsAwarded };
-  }, { behavior: "immediate" });
+      addDailyLogStats(
+        tx,
+        today,
+        {
+          wordsPracticed: 1,
+          studySeconds: 15,
+        },
+        profileId
+      );
+
+      return { ...nextSrs, starsAwarded };
+    },
+    { behavior: "immediate" }
+  );
+
+  if (!outcome) {
+    return buildNoActiveProfileResponse();
+  }
 
   return NextResponse.json({
     ok: true,

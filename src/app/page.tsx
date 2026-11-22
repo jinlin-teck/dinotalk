@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Award, Compass, Gift, Lock, Play, Sparkles, Star } from "lucide-react";
 import { AppShell, type ProfileSummary } from "@/components/AppShell";
 import { DinoCharacter } from "@/components/illustrations/DinoCharacter";
@@ -11,7 +11,7 @@ import {
   L0_UNITS,
 } from "@/data/curriculum";
 import { soundEffects } from "@/lib/sound-effects";
-import type { TodayLogSummary } from "@/types/api";
+import type { PublicProfileSummary, TodayLogSummary } from "@/types/api";
 
 interface UnitProgressRow {
   unitId: string;
@@ -31,22 +31,32 @@ interface HomeProfile extends ProfileSummary {
 
 export default function AdventureMapPage() {
   const [profile, setProfile] = useState<HomeProfile | null>(null);
+  const [profiles, setProfiles] = useState<PublicProfileSummary[]>([]);
+  const [needsProfile, setNeedsProfile] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   const [todayLog, setTodayLog] = useState<TodayLogSummary | null>(null);
   const [dueReviewCount, setDueReviewCount] = useState(0);
   const [progressList, setProgressList] = useState<UnitProgressRow[]>([]);
 
-  useEffect(() => {
-    fetch("/api/profile")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!data) return;
-        setProfile(data.profile);
-        setTodayLog(data.todayLog ?? null);
-        setDueReviewCount(data.dueReviewCount ?? 0);
-        setProgressList(data.unitProgress ?? []);
-      })
-      .catch(() => undefined);
+  const loadProfile = useCallback(async () => {
+    try {
+      const r = await fetch("/api/profile", { cache: "no-store" });
+      if (!r.ok) return;
+      const data = await r.json();
+      setProfiles(data.profiles ?? []);
+      setNeedsProfile(Boolean(data.needsProfile));
+      setProfile(data.profile ?? null);
+      setTodayLog(data.todayLog ?? null);
+      setDueReviewCount(data.dueReviewCount ?? 0);
+      setProgressList(data.unitProgress ?? []);
+    } catch {
+      // ignore
+    }
   }, []);
+
+  useEffect(() => {
+    void loadProfile();
+  }, [loadProfile]);
 
   const progressMap = new Map(progressList.map((p) => [p.unitId, p]));
   const totalUnitStars = progressList.reduce((sum, p) => sum + (p.starsEarned ?? 0), 0);
@@ -62,8 +72,44 @@ export default function AdventureMapPage() {
   const dailyGoalReached = todayMin >= dailyGoalMin;
 
   return (
-    <AppShell profile={profile} dueReviewCount={dueReviewCount}>
+    <AppShell
+      profile={profile}
+      profiles={profiles}
+      needsProfile={needsProfile}
+      switcherOpen={switcherOpen}
+      onSwitcherOpenChange={setSwitcherOpen}
+      onProfileChanged={() => {
+        void loadProfile();
+      }}
+      dueReviewCount={dueReviewCount}
+    >
       <div className="space-y-7">
+        {/* Identity Switch Prompt */}
+        {profile && (
+          <div
+            data-testid="home-switch-profile-prompt"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-white border-2 border-emerald-100 px-4 py-2.5 shadow-2xs"
+          >
+            <div className="flex items-center gap-2 text-sm font-bold text-slate-700">
+              <span className="text-base">🦕</span>
+              <span>
+                当前冒险家：<strong className="text-emerald-700">{profile.nickname}</strong>
+              </span>
+            </div>
+            <button
+              type="button"
+              data-testid="home-switch-profile-btn"
+              onClick={() => {
+                soundEffects.playClick();
+                setSwitcherOpen(true);
+              }}
+              className="text-xs sm:text-sm font-extrabold text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 px-2.5 py-1 rounded-xl transition"
+            >
+              不是{profile.nickname}？点这里切换
+            </button>
+          </div>
+        )}
+
         {/* Hero Welcome Banner */}
         <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-emerald-500 via-emerald-500 to-teal-500 text-white p-5 sm:p-7 shadow-lg border-b-4 border-emerald-700">
           <div className="flex flex-col md:flex-row items-center justify-between gap-5">

@@ -5,8 +5,12 @@ import { getDb, todayDateKey } from "@/db";
 import { appSettings, chatMessages, chatSessions, childProfiles } from "@/db/schema";
 import { FREETALK_TOPICS } from "@/data/curriculum";
 import { runFreeTalkTurn } from "@/lib/ai/tutor-agent";
+import {
+  buildNoActiveProfileResponse,
+  resolveActiveProfile,
+} from "@/lib/auth/profile-session";
 import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
-import { addDailyLogStats, DEFAULT_PROFILE_ID } from "@/lib/services/learning-service";
+import { addDailyLogStats } from "@/lib/services/learning-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,11 +32,12 @@ export async function POST(request: Request) {
   }
 
   const db = getDb();
-  const profile = db
-    .select()
-    .from(childProfiles)
-    .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-    .get()!;
+  const profile = resolveActiveProfile(db, request);
+  if (!profile) {
+    return buildNoActiveProfileResponse();
+  }
+  const profileId = profile.id;
+
   const settings = db.select().from(appSettings).where(eq(appSettings.id, 1)).get()!;
 
   let sessionId = parsed.data.sessionId;
@@ -45,7 +50,7 @@ export async function POST(request: Request) {
   if (sessionId) {
     const existing = db.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).get();
     if (existing) {
-      if (existing.mode !== "freetalk") {
+      if (existing.profileId !== profileId || existing.mode !== "freetalk") {
         return NextResponse.json({ error: "对话会话类型不匹配" }, { status: 400 });
       }
       const rows = db
@@ -84,16 +89,23 @@ export async function POST(request: Request) {
   const today = todayDateKey(now);
 
   const activeSessionId = db.transaction((tx) => {
+    const profileRow = tx
+      .select({ id: childProfiles.id })
+      .from(childProfiles)
+      .where(eq(childProfiles.id, profileId))
+      .get();
+    if (!profileRow) return null;
+
     let targetSessionId = sessionId;
     if (!targetSessionId) {
       const res = tx
         .insert(chatSessions)
         .values({
-          profileId: DEFAULT_PROFILE_ID,
+          profileId,
           unitId: parsed.data.topicId || "freetalk",
           mode: "freetalk",
           completedGoalsJson: "[]",
-          summaryZh: "和 Dino 自由聊英语",
+          summaryZh: `和 ${profile.companionName} 自由聊英语`,
           starsEarned: 0,
           createdAt: nowIso,
           updatedAt: nowIso,
@@ -144,13 +156,22 @@ export async function POST(request: Request) {
       .where(eq(chatSessions.id, targetSessionId))
       .run();
 
-    addDailyLogStats(tx, today, {
-      wordsPracticed: 1,
-      studySeconds: 15,
-    });
+    addDailyLogStats(
+      tx,
+      today,
+      {
+        wordsPracticed: 1,
+        studySeconds: 15,
+      },
+      profileId
+    );
 
     return targetSessionId;
   });
+
+  if (activeSessionId === null) {
+    return buildNoActiveProfileResponse();
+  }
 
   return NextResponse.json({
     sessionId: activeSessionId,

@@ -3,12 +3,12 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "@/db";
 import { appSettings } from "@/db/schema";
+import { resolveActiveProfile } from "@/lib/auth/profile-session";
 import { assertSameOrigin } from "@/lib/security/endpoint-guard";
 import { consumeRateLimit, getRequestSourceKey } from "@/lib/security/rate-limit";
 import { resolveActiveSttMode } from "@/lib/speech/constants";
 import { transcribeWithMiniMax, transcribeWithOpenAi } from "@/lib/speech/stt";
 import { issueVoiceProof } from "@/lib/speech/voice-proof";
-import { DEFAULT_PROFILE_ID } from "@/lib/services/learning-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -139,9 +139,13 @@ export async function POST(request: Request) {
             hints,
             language,
           });
-    const voiceProof = text.trim() && purpose.success
-      ? issueVoiceProof(text, DEFAULT_PROFILE_ID, purpose.data)
-      : undefined;
+    let voiceProof: string | undefined;
+    if (text.trim() && purpose.success) {
+      const activeProfile = resolveActiveProfile(db, request);
+      if (activeProfile) {
+        voiceProof = issueVoiceProof(text, activeProfile.id, purpose.data);
+      }
+    }
     return NextResponse.json({ ok: true, text, voiceProof });
   } catch {
     return NextResponse.json({

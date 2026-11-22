@@ -8,6 +8,7 @@ import { FREETALK_TOPICS } from "@/data/curriculum";
 import type { EmotionMood, SuggestionChip } from "@/data/curriculum/types";
 import { useSpeech } from "@/hooks/useSpeech";
 import { soundEffects } from "@/lib/sound-effects";
+import type { PublicProfileSummary } from "@/types/api";
 
 interface ChatTurn {
   id: string;
@@ -20,6 +21,8 @@ export default function FreeTalkPage() {
   const [profile, setProfile] = useState<
     (ProfileSummary & { avatarId?: string; equippedAccessories?: string[] }) | null
   >(null);
+  const [profiles, setProfiles] = useState<PublicProfileSummary[]>([]);
+  const [needsProfile, setNeedsProfile] = useState(false);
   const [dueReviewCount, setDueReviewCount] = useState(0);
   const [activeTopicId, setActiveTopicId] = useState(FREETALK_TOPICS[0].id);
   const [sttLang, setSttLang] = useState<"en" | "zh">("zh");
@@ -66,11 +69,13 @@ export default function FreeTalkPage() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/profile")
+    fetch("/api/profile", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!d) return;
-        setProfile(d.profile);
+        setProfiles(d.profiles ?? []);
+        setNeedsProfile(Boolean(d.needsProfile));
+        setProfile(d.profile ?? null);
         setDueReviewCount(d.dueReviewCount ?? 0);
       })
       .catch(() => undefined);
@@ -175,7 +180,12 @@ export default function FreeTalkPage() {
   };
 
   return (
-    <AppShell profile={profile} dueReviewCount={dueReviewCount}>
+    <AppShell
+      profile={profile}
+      profiles={profiles}
+      needsProfile={needsProfile}
+      dueReviewCount={dueReviewCount}
+    >
       <div className="space-y-5">
         {/* Header with Dino */}
         <div className="bg-white rounded-3xl border-2 border-emerald-200 p-4 sm:p-5 flex items-center gap-4">

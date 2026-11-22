@@ -11,13 +11,16 @@ import {
 } from "@/db/schema";
 import { getUnitById } from "@/data/curriculum";
 import { runRoleplayTurn } from "@/lib/ai/tutor-agent";
+import {
+  buildNoActiveProfileResponse,
+  resolveActiveProfile,
+} from "@/lib/auth/profile-session";
 import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
 import { resolveActiveSttMode } from "@/lib/speech/constants";
 import { consumeVoiceProof } from "@/lib/speech/voice-proof";
 import {
   addDailyLogStats,
   awardStarsAndMood,
-  DEFAULT_PROFILE_ID,
   parseJsonStringArray,
   unlockUnitAccessoryIfCompleted,
   upsertWordMasteryItem,
@@ -52,11 +55,12 @@ export async function POST(request: Request) {
   }
 
   const db = getDb();
-  const profile = db
-    .select()
-    .from(childProfiles)
-    .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-    .get()!;
+  const profile = resolveActiveProfile(db, request);
+  if (!profile) {
+    return buildNoActiveProfileResponse();
+  }
+  const profileId = profile.id;
+
   const settings = db.select().from(appSettings).where(eq(appSettings.id, 1)).get()!;
   const activeSttMode = resolveActiveSttMode({
     sttEngine: settings.sttEngine,
@@ -77,7 +81,11 @@ export async function POST(request: Request) {
       .where(eq(chatSessions.id, sessionId))
       .get();
     if (existingSession) {
-      if (existingSession.profileId !== DEFAULT_PROFILE_ID || existingSession.unitId !== unitId || existingSession.mode !== "roleplay") {
+      if (
+        existingSession.profileId !== profileId ||
+        existingSession.unitId !== unitId ||
+        existingSession.mode !== "roleplay"
+      ) {
         return NextResponse.json({ error: "对话会话与当前关卡不匹配" }, { status: 400 });
       }
       initialCompletedGoals = parseJsonStringArray(existingSession.completedGoalsJson).filter(
@@ -121,192 +129,212 @@ export async function POST(request: Request) {
   const nowIso = now.toISOString();
   const today = todayDateKey(now);
 
-  const txResult = db.transaction((tx) => {
-    let activeSessionId = sessionId;
-    let existingSession = activeSessionId
-      ? tx.select().from(chatSessions).where(eq(chatSessions.id, activeSessionId)).get()
-      : undefined;
-
-    if (!existingSession) {
-      const insertRes = tx
-        .insert(chatSessions)
-        .values({
-          profileId: DEFAULT_PROFILE_ID,
-          unitId,
-          mode: "roleplay",
-          completedGoalsJson: "[]",
-          summaryZh: `${unit.titleZh}情景练习`,
-          starsEarned: 0,
-          createdAt: nowIso,
-          updatedAt: nowIso,
-        })
-        .run();
-      activeSessionId = Number(insertRes.lastInsertRowid);
-
-      // Seed opening assistant turn for report history clarity
-      tx.insert(chatMessages)
-        .values({
-          sessionId: activeSessionId,
-          role: "assistant",
-          englishText: unit.roleplay.openingEn,
-          chineseText: unit.roleplay.openingZh,
-          emotion: "happy",
-          suggestionsJson: JSON.stringify(unit.roleplay.openingSuggestions),
-          createdAt: nowIso,
-        })
-        .run();
-
-      existingSession = tx
-        .select()
-        .from(chatSessions)
-        .where(eq(chatSessions.id, activeSessionId))
-        .get()!;
-    }
-
-    // Verify cloud speech against this turn. Browser Web Speech is trusted for local encouragement.
-    const verifiedCloudTurn = consumeVoiceProof(tx, cloudProof, DEFAULT_PROFILE_ID, {
-      purpose: "roleplay",
-      transcript: userText,
-    });
-    const hasVoiceTurn =
-      existingSession.hasVoiceTurn ||
-      verifiedCloudTurn ||
-      (activeSttMode === "browser" && usedVoice === true);
-
-    const storedGoals = parseJsonStringArray(existingSession.completedGoalsJson).filter((id) =>
-      validGoalIds.has(id)
-    );
-    const mergedGoalSet = new Set([...storedGoals, ...resp.completedGoalIds]);
-    const finalCompletedGoals = unit.roleplay.goals
-      .filter((g) => mergedGoalSet.has(g.id))
-      .map((g) => g.id);
-    const authoritativeComplete =
-      finalCompletedGoals.length >= unit.roleplay.goals.length;
-
-    tx.insert(chatMessages)
-      .values({
-        sessionId: activeSessionId!,
-        role: "user",
-        englishText: userText.trim(),
-        chineseText: "",
-        emotion: "happy",
-        suggestionsJson: "[]",
-        createdAt: nowIso,
-      })
-      .run();
-
-    tx.insert(chatMessages)
-      .values({
-        sessionId: activeSessionId!,
-        role: "assistant",
-        englishText: resp.englishReply,
-        chineseText: resp.chineseHint,
-        emotion: resp.emotion,
-        suggestionsJson: JSON.stringify(resp.nextSuggestions),
-        createdAt: nowIso,
-      })
-      .run();
-
-    // Update word mastery for words mastered in conversation
-    for (const w of resp.masteredWords) {
-      const card = unit.vocab.find((v) => v.word.toLowerCase() === w.toLowerCase());
-      if (!card) continue;
-      upsertWordMasteryItem(tx, {
-        itemKey: card.id,
-        itemType: "word",
-        unitId,
-        correct: true,
-        now,
-      });
-    }
-
-    let starsAwarded = 0;
-    let voiceBonusStars = 0;
-    let unlockedAccessory: UnlockedAccessoryNotice | null = null;
-    const alreadyRewardedInSession = existingSession.starsEarned > 0;
-
-    if (authoritativeComplete && !alreadyRewardedInSession) {
-      const prog = tx
-        .select()
-        .from(unitProgress)
-        .where(
-          and(eq(unitProgress.profileId, DEFAULT_PROFILE_ID), eq(unitProgress.unitId, unitId))
-        )
+  const txResult = db.transaction(
+    (tx) => {
+      const profileRow = tx
+        .select({ id: childProfiles.id })
+        .from(childProfiles)
+        .where(eq(childProfiles.id, profileId))
         .get();
-      const alreadyRoleplayDone = prog?.roleplayDone === 1;
-      const baseStars = alreadyRoleplayDone ? 1 : 4;
-      voiceBonusStars = !alreadyRoleplayDone && hasVoiceTurn ? 1 : 0;
-      starsAwarded = baseStars + voiceBonusStars;
+      if (!profileRow) return null;
 
-      const nextStarsCount = prog
-        ? prog.storyDone + prog.phonicsDone + prog.gameDone + 1
-        : 1;
+      let activeSessionId = sessionId;
+      let existingSession = activeSessionId
+        ? tx.select().from(chatSessions).where(eq(chatSessions.id, activeSessionId)).get()
+        : undefined;
 
-      if (prog) {
-        tx.update(unitProgress)
-          .set({
-            roleplayDone: 1,
-            starsEarned: nextStarsCount,
-            updatedAt: nowIso,
-          })
-          .where(eq(unitProgress.id, prog.id))
-          .run();
-      } else {
-        tx.insert(unitProgress)
+      if (!existingSession) {
+        const insertRes = tx
+          .insert(chatSessions)
           .values({
-            profileId: DEFAULT_PROFILE_ID,
+            profileId,
             unitId,
-            storyDone: 0,
-            phonicsDone: 0,
-            gameDone: 0,
-            roleplayDone: 1,
-            starsEarned: 1,
-            bestGameScore: 0,
+            mode: "roleplay",
+            completedGoalsJson: "[]",
+            summaryZh: `${unit.titleZh}情景练习`,
+            starsEarned: 0,
+            createdAt: nowIso,
             updatedAt: nowIso,
           })
           .run();
+        activeSessionId = Number(insertRes.lastInsertRowid);
+
+        // Seed opening assistant turn for report history clarity
+        tx.insert(chatMessages)
+          .values({
+            sessionId: activeSessionId,
+            role: "assistant",
+            englishText: unit.roleplay.openingEn,
+            chineseText: unit.roleplay.openingZh,
+            emotion: "happy",
+            suggestionsJson: JSON.stringify(unit.roleplay.openingSuggestions),
+            createdAt: nowIso,
+          })
+          .run();
+
+        existingSession = tx
+          .select()
+          .from(chatSessions)
+          .where(eq(chatSessions.id, activeSessionId))
+          .get()!;
       }
 
-      awardStarsAndMood(tx, {
-        starsDelta: starsAwarded,
-        moodDelta: 8,
-        nowIso,
+      // Verify cloud speech against this turn. Browser Web Speech is trusted for local encouragement.
+      const verifiedCloudTurn = consumeVoiceProof(tx, cloudProof, profileId, {
+        purpose: "roleplay",
+        transcript: userText,
       });
+      const hasVoiceTurn =
+        existingSession.hasVoiceTurn ||
+        verifiedCloudTurn ||
+        (activeSttMode === "browser" && usedVoice === true);
 
-      unlockedAccessory = unlockUnitAccessoryIfCompleted(tx, {
-        unitId,
-        starsEarned: nextStarsCount,
-        nowIso,
-      });
-    }
+      const storedGoals = parseJsonStringArray(existingSession.completedGoalsJson).filter((id) =>
+        validGoalIds.has(id)
+      );
+      const mergedGoalSet = new Set([...storedGoals, ...resp.completedGoalIds]);
+      const finalCompletedGoals = unit.roleplay.goals
+        .filter((g) => mergedGoalSet.has(g.id))
+        .map((g) => g.id);
+      const authoritativeComplete =
+        finalCompletedGoals.length >= unit.roleplay.goals.length;
 
-    tx.update(chatSessions)
-      .set({
-        completedGoalsJson: JSON.stringify(finalCompletedGoals),
-        summaryZh: `${unit.titleZh} · 已达成 ${finalCompletedGoals.length}/${unit.roleplay.goals.length} 个小目标`,
-        starsEarned:
-          starsAwarded > 0 ? existingSession.starsEarned + starsAwarded : existingSession.starsEarned,
-        hasVoiceTurn,
-        updatedAt: nowIso,
-      })
-      .where(eq(chatSessions.id, activeSessionId!))
-      .run();
+      tx.insert(chatMessages)
+        .values({
+          sessionId: activeSessionId!,
+          role: "user",
+          englishText: userText.trim(),
+          chineseText: "",
+          emotion: "happy",
+          suggestionsJson: "[]",
+          createdAt: nowIso,
+        })
+        .run();
 
-    addDailyLogStats(tx, today, {
-      studySeconds: 20,
-      wordsPracticed: Math.max(1, resp.masteredWords.length),
-      activitiesCompleted: starsAwarded > 0 ? 1 : 0,
-    });
+      tx.insert(chatMessages)
+        .values({
+          sessionId: activeSessionId!,
+          role: "assistant",
+          englishText: resp.englishReply,
+          chineseText: resp.chineseHint,
+          emotion: resp.emotion,
+          suggestionsJson: JSON.stringify(resp.nextSuggestions),
+          createdAt: nowIso,
+        })
+        .run();
 
-    return {
-      sessionId: activeSessionId!,
-      starsAwarded,
-      voiceBonusStars,
-      unlockedAccessory,
-      finalCompletedGoals,
-      authoritativeComplete,
-    };
-  }, { behavior: "immediate" });
+      // Update word mastery for words mastered in conversation
+      for (const w of resp.masteredWords) {
+        const card = unit.vocab.find((v) => v.word.toLowerCase() === w.toLowerCase());
+        if (!card) continue;
+        upsertWordMasteryItem(tx, {
+          itemKey: card.id,
+          itemType: "word",
+          unitId,
+          correct: true,
+          now,
+          profileId,
+        });
+      }
+
+      let starsAwarded = 0;
+      let voiceBonusStars = 0;
+      let unlockedAccessory: UnlockedAccessoryNotice | null = null;
+      const alreadyRewardedInSession = existingSession.starsEarned > 0;
+
+      if (authoritativeComplete && !alreadyRewardedInSession) {
+        const prog = tx
+          .select()
+          .from(unitProgress)
+          .where(and(eq(unitProgress.profileId, profileId), eq(unitProgress.unitId, unitId)))
+          .get();
+        const alreadyRoleplayDone = prog?.roleplayDone === 1;
+        const baseStars = alreadyRoleplayDone ? 1 : 4;
+        voiceBonusStars = !alreadyRoleplayDone && hasVoiceTurn ? 1 : 0;
+        starsAwarded = baseStars + voiceBonusStars;
+
+        const nextStarsCount = prog
+          ? prog.storyDone + prog.phonicsDone + prog.gameDone + 1
+          : 1;
+
+        if (prog) {
+          tx.update(unitProgress)
+            .set({
+              roleplayDone: 1,
+              starsEarned: nextStarsCount,
+              updatedAt: nowIso,
+            })
+            .where(eq(unitProgress.id, prog.id))
+            .run();
+        } else {
+          tx.insert(unitProgress)
+            .values({
+              profileId,
+              unitId,
+              storyDone: 0,
+              phonicsDone: 0,
+              gameDone: 0,
+              roleplayDone: 1,
+              starsEarned: 1,
+              bestGameScore: 0,
+              updatedAt: nowIso,
+            })
+            .run();
+        }
+
+        awardStarsAndMood(tx, {
+          starsDelta: starsAwarded,
+          moodDelta: 8,
+          nowIso,
+          profileId,
+        });
+
+        unlockedAccessory = unlockUnitAccessoryIfCompleted(tx, {
+          unitId,
+          starsEarned: nextStarsCount,
+          nowIso,
+          profileId,
+        });
+      }
+
+      tx.update(chatSessions)
+        .set({
+          completedGoalsJson: JSON.stringify(finalCompletedGoals),
+          summaryZh: `${unit.titleZh} · 已达成 ${finalCompletedGoals.length}/${unit.roleplay.goals.length} 个小目标`,
+          starsEarned:
+            starsAwarded > 0 ? existingSession.starsEarned + starsAwarded : existingSession.starsEarned,
+          hasVoiceTurn,
+          updatedAt: nowIso,
+        })
+        .where(eq(chatSessions.id, activeSessionId!))
+        .run();
+
+      addDailyLogStats(
+        tx,
+        today,
+        {
+          studySeconds: 20,
+          wordsPracticed: Math.max(1, resp.masteredWords.length),
+          activitiesCompleted: starsAwarded > 0 ? 1 : 0,
+        },
+        profileId
+      );
+
+      return {
+        sessionId: activeSessionId!,
+        starsAwarded,
+        voiceBonusStars,
+        unlockedAccessory,
+        finalCompletedGoals,
+        authoritativeComplete,
+      };
+    },
+    { behavior: "immediate" }
+  );
+
+  if (!txResult) {
+    return buildNoActiveProfileResponse();
+  }
 
   const normalizedResp = {
     ...resp,

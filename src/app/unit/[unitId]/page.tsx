@@ -14,6 +14,7 @@ import { soundEffects } from "@/lib/sound-effects";
 import { isMasteryItemWeak } from "@/lib/srs";
 import type {
   CurriculumItemType,
+  PublicProfileSummary,
   UnlockedAccessoryNotice,
 } from "@/types/api";
 
@@ -56,6 +57,8 @@ export default function UnitLearningPage({
   const [profile, setProfile] = useState<
     (ProfileSummary & { avatarId?: string; equippedAccessories?: string[] }) | null
   >(null);
+  const [profiles, setProfiles] = useState<PublicProfileSummary[]>([]);
+  const [needsProfile, setNeedsProfile] = useState(false);
   const [dueReviewCount, setDueReviewCount] = useState(0);
   const [unitProg, setUnitProg] = useState<UnitProgressRow | null>(null);
   const [weakVocabIds, setWeakVocabIds] = useState<string[]>([]);
@@ -108,12 +111,14 @@ export default function UnitLearningPage({
   const loadProfileAndProgress = useCallback(async () => {
     try {
       const [profRes, progRes] = await Promise.all([
-        fetch("/api/profile"),
-        fetch("/api/progress"),
+        fetch("/api/profile", { cache: "no-store" }),
+        fetch("/api/progress", { cache: "no-store" }),
       ]);
       if (profRes.ok) {
         const data = await profRes.json();
-        setProfile(data.profile);
+        setProfiles(data.profiles ?? []);
+        setNeedsProfile(Boolean(data.needsProfile));
+        setProfile(data.profile ?? null);
         setDueReviewCount(data.dueReviewCount ?? 0);
         const found = (data.unitProgress as UnitProgressRow[] | undefined)?.find(
           (p) => p.unitId === unitId
@@ -221,7 +226,12 @@ export default function UnitLearningPage({
   ];
 
   return (
-    <AppShell profile={profile} dueReviewCount={dueReviewCount}>
+    <AppShell
+      profile={profile}
+      profiles={profiles}
+      needsProfile={needsProfile}
+      dueReviewCount={dueReviewCount}
+    >
       <div className="space-y-5">
         {/* Unit Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white rounded-3xl p-4 sm:p-5 border-2 border-emerald-100 shadow-xs">

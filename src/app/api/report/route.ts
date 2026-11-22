@@ -11,31 +11,88 @@ import {
 } from "@/db/schema";
 import { getAllPhonics, getAllSentences, getAllVocab, L0_UNITS } from "@/data/curriculum";
 import { requireParentAuth } from "@/lib/auth/parent-session";
-import { DEFAULT_PROFILE_ID } from "@/lib/services/learning-service";
+import { resolveActiveProfile } from "@/lib/auth/profile-session";
 import { isDueForReview, isMasteryItemWeak } from "@/lib/srs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function buildEmptyLast7Days() {
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    days.push({
+      dateKey: todayDateKey(d),
+      label: `${d.getMonth() + 1}/${d.getDate()}`,
+      studyMinutes: 0,
+      activitiesCompleted: 0,
+      wordsPracticed: 0,
+    });
+  }
+  return days;
+}
 
 export async function GET(request: Request) {
   const authError = requireParentAuth(request);
   if (authError) return authError;
 
   const db = getDb();
-  const profile = db
-    .select()
-    .from(childProfiles)
-    .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-    .get();
+  const url = new URL(request.url);
+  const rawProfileId = url.searchParams.get("profileId")?.trim() ?? "";
+
+  let profile: typeof childProfiles.$inferSelect | undefined;
+  if (rawProfileId) {
+    if (!/^[1-9]\d*$/.test(rawProfileId)) {
+      return NextResponse.json({ error: "无效的孩子档案 ID" }, { status: 400 });
+    }
+    profile = db
+      .select()
+      .from(childProfiles)
+      .where(eq(childProfiles.id, Number(rawProfileId)))
+      .get();
+    if (!profile) {
+      return NextResponse.json({ error: "找不到该孩子档案" }, { status: 404 });
+    }
+  } else {
+    profile =
+      resolveActiveProfile(db, request) ??
+      db.select().from(childProfiles).orderBy(asc(childProfiles.id)).get();
+  }
+
+  if (!profile) {
+    const emptyUnitSummary = L0_UNITS.map((u) => ({
+      unitId: u.id,
+      order: u.order,
+      titleZh: u.titleZh,
+      badgeEmoji: u.badgeEmoji,
+      storyDone: false,
+      phonicsDone: false,
+      gameDone: false,
+      roleplayDone: false,
+      starsEarned: 0,
+    }));
+    return NextResponse.json({
+      profile: null,
+      last7Days: buildEmptyLast7Days(),
+      unitSummary: emptyUnitSummary,
+      wordStats: [],
+      parentTips: [],
+      recentSessions: [],
+    });
+  }
+
+  const profileId = profile.id;
+
   const progressRows = db
     .select()
     .from(unitProgress)
-    .where(eq(unitProgress.profileId, DEFAULT_PROFILE_ID))
+    .where(eq(unitProgress.profileId, profileId))
     .all();
   const masteryRows = db
     .select()
     .from(wordMastery)
-    .where(eq(wordMastery.profileId, DEFAULT_PROFILE_ID))
+    .where(eq(wordMastery.profileId, profileId))
     .all();
 
   const sevenDaysAgo = new Date();
@@ -47,7 +104,7 @@ export async function GET(request: Request) {
     .from(dailyLogs)
     .where(
       and(
-        eq(dailyLogs.profileId, DEFAULT_PROFILE_ID),
+        eq(dailyLogs.profileId, profileId),
         gte(dailyLogs.dateKey, sevenDaysAgoKey)
       )
     )
@@ -56,7 +113,7 @@ export async function GET(request: Request) {
   const sessionRows = db
     .select()
     .from(chatSessions)
-    .where(eq(chatSessions.profileId, DEFAULT_PROFILE_ID))
+    .where(eq(chatSessions.profileId, profileId))
     .orderBy(desc(chatSessions.id))
     .limit(10)
     .all();
@@ -190,7 +247,16 @@ export async function GET(request: Request) {
   });
 
   return NextResponse.json({
-    profile,
+    profile: {
+      id: profile.id,
+      nickname: profile.nickname,
+      companionName: profile.companionName,
+      totalStars: profile.totalStars,
+      level: profile.level,
+      streakDays: profile.streakDays,
+      dailyGoalMinutes: profile.dailyGoalMinutes,
+      eyeCareMinutes: profile.eyeCareMinutes,
+    },
     last7Days,
     unitSummary,
     wordStats,

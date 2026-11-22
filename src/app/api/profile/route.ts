@@ -5,14 +5,22 @@ import { getDb, todayDateKey } from "@/db";
 import { appSettings, childProfiles, dailyLogs, unitProgress, wordMastery } from "@/db/schema";
 import { DINO_SKINS, PET_ACCESSORIES, PET_SNACKS } from "@/data/curriculum";
 import { requireParentAuth } from "@/lib/auth/parent-session";
+import {
+  buildNoActiveProfileResponse,
+  clearActiveProfileCookie,
+  extractProfileIdFromRequest,
+  resolveActiveProfile,
+} from "@/lib/auth/profile-session";
 import { assertJsonSameOrigin } from "@/lib/security/endpoint-guard";
 import { resolveActiveSttMode } from "@/lib/speech/constants";
 import { consumeVoiceProof } from "@/lib/speech/voice-proof";
 import {
   addDailyLogStats,
   applyAccessoryEquipWithSlot,
-  DEFAULT_PROFILE_ID,
   type DbOrTx,
+  findProfileByNickname,
+  listPublicProfileSummaries,
+  normalizeNickname,
   parseJsonStringArray,
   serializeProfile,
   withCompletedUnitAccessories,
@@ -64,30 +72,40 @@ function withDailyActivity(
   };
 }
 
-function getProfileProgress(db: DbOrTx) {
-  return db.select().from(unitProgress).where(eq(unitProgress.profileId, DEFAULT_PROFILE_ID)).all();
+function getProfileProgress(db: Pick<DbOrTx, "select">, profileId: number) {
+  return db.select().from(unitProgress).where(eq(unitProgress.profileId, profileId)).all();
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const db = getDb();
-  const profile = db
-    .select()
-    .from(childProfiles)
-    .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-    .get();
+  const profiles = listPublicProfileSummaries(db);
+  const profile = resolveActiveProfile(db, request);
+
   if (!profile) {
-    return NextResponse.json({ error: "Profile not found" }, { status: 404 });
+    const res = NextResponse.json({
+      needsProfile: true,
+      profile: null,
+      profiles,
+      todayLog: null,
+      dueReviewCount: 0,
+      unitProgress: [],
+    });
+    if (extractProfileIdFromRequest(request) !== null) {
+      clearActiveProfileCookie(res, request);
+    }
+    return res;
   }
+
   const now = new Date();
   const today = todayDateKey(now);
   const todayLog =
     db
       .select()
       .from(dailyLogs)
-      .where(and(eq(dailyLogs.profileId, DEFAULT_PROFILE_ID), eq(dailyLogs.dateKey, today)))
+      .where(and(eq(dailyLogs.profileId, profile.id), eq(dailyLogs.dateKey, today)))
       .get() ?? {
       id: 0,
-      profileId: DEFAULT_PROFILE_ID,
+      profileId: profile.id,
       dateKey: today,
       studySeconds: 0,
       activitiesCompleted: 0,
@@ -98,15 +116,15 @@ export async function GET() {
   const dueCountRow = db
     .select({ count: sql<number>`count(*)` })
     .from(wordMastery)
-    .where(
-      and(eq(wordMastery.profileId, DEFAULT_PROFILE_ID), lte(wordMastery.nextReviewAt, nowIso))
-    )
+    .where(and(eq(wordMastery.profileId, profile.id), lte(wordMastery.nextReviewAt, nowIso)))
     .get();
 
-  const progress = getProfileProgress(db);
+  const progress = getProfileProgress(db, profile.id);
 
   return NextResponse.json({
+    needsProfile: false,
     profile: serializeProfile(withCompletedUnitAccessories(withDailyActivity(profile, now), progress)),
+    profiles,
     todayLog,
     dueReviewCount: Number(dueCountRow?.count ?? 0),
     unitProgress: progress,
@@ -116,6 +134,7 @@ export async function GET() {
 const PatchSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("update_profile"),
+    profileId: z.number().int().positive().optional(),
     nickname: z.string().min(1).max(20).optional(),
     companionName: z.string().min(1).max(20).optional(),
     dailyGoalMinutes: z.number().int().min(5).max(60).optional(),
@@ -157,47 +176,83 @@ export async function PATCH(request: Request) {
   }
 
   const data = parsed.data;
-  if (data.action === "update_profile") {
-    const authError = requireParentAuth(request);
-    if (authError) return authError;
-  }
-
   const db = getDb();
   const nowDate = new Date();
   const now = nowDate.toISOString();
 
   if (data.action === "update_profile") {
+    const authError = requireParentAuth(request);
+    if (authError) return authError;
+
+    const targetProfileId = data.profileId ?? extractProfileIdFromRequest(request);
+    if (targetProfileId === null) {
+      return NextResponse.json({ error: "Profile not found" }, { status: 404 });
+    }
+
+    const nextNickname =
+      data.nickname !== undefined ? normalizeNickname(data.nickname) : undefined;
+    if (nextNickname !== undefined && !nextNickname) {
+      return NextResponse.json({ error: "孩子昵称不能为空" }, { status: 400 });
+    }
+    const nextCompanion =
+      data.companionName !== undefined ? normalizeNickname(data.companionName) : undefined;
+    if (nextCompanion !== undefined && !nextCompanion) {
+      return NextResponse.json({ error: "恐龙伙伴名字不能为空" }, { status: 400 });
+    }
+
     const result = db.transaction((tx) => {
       const profile = tx
         .select()
         .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+        .where(eq(childProfiles.id, targetProfileId))
         .get();
-      if (!profile) return null;
+      if (!profile) return { kind: "not_found" as const };
+
+      if (nextNickname !== undefined) {
+        const duplicate = findProfileByNickname(tx, nextNickname, targetProfileId);
+        if (duplicate) {
+          return { kind: "conflict" as const, existing: duplicate };
+        }
+      }
 
       tx.update(childProfiles)
         .set({
-          nickname: data.nickname?.trim() || profile.nickname,
-          companionName: data.companionName?.trim() || profile.companionName,
+          nickname: nextNickname ?? profile.nickname,
+          companionName: nextCompanion ?? profile.companionName,
           dailyGoalMinutes: data.dailyGoalMinutes ?? profile.dailyGoalMinutes,
           eyeCareMinutes: data.eyeCareMinutes ?? profile.eyeCareMinutes,
           updatedAt: now,
         })
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+        .where(eq(childProfiles.id, targetProfileId))
         .run();
 
-      return tx
-        .select()
-        .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-        .get()!;
+      return {
+        kind: "ok" as const,
+        profile: tx
+          .select()
+          .from(childProfiles)
+          .where(eq(childProfiles.id, targetProfileId))
+          .get()!,
+      };
     });
 
-    if (!result) {
+    if (result.kind === "not_found") {
       return NextResponse.json({ error: "Profile not found" }, { status: 404 });
     }
-    return NextResponse.json({ profile: serializeProfile(result) });
+    if (result.kind === "conflict") {
+      return NextResponse.json(
+        { error: `已存在名为「${result.existing.nickname}」的孩子档案` },
+        { status: 409 }
+      );
+    }
+    return NextResponse.json({ profile: serializeProfile(result.profile) });
   }
+
+  const activeProfile = resolveActiveProfile(db, request);
+  if (!activeProfile) {
+    return buildNoActiveProfileResponse();
+  }
+  const profileId = activeProfile.id;
 
   if (data.action === "feed") {
     const snack = PET_SNACKS.find((s) => s.id === data.snackId);
@@ -209,67 +264,73 @@ export async function PATCH(request: Request) {
       ? Math.max(1, Math.floor(snack.costStars / 2))
       : snack.costStars;
 
-    const txRes = db.transaction((tx) => {
-      const profile = tx
-        .select()
-        .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-        .get();
-      if (!profile) return { error: "Profile not found", status: 404 as const };
-      if (profile.totalStars < effectiveCost) {
-        return {
-          error: "星星不够啦，再去学一个单元赚星星吧！",
-          status: 400 as const,
-        };
-      }
-
-      if (data.spokenDiscount) {
-        const settings = tx.select().from(appSettings).where(eq(appSettings.id, 1)).get()!;
-        const activeSttMode = resolveActiveSttMode({
-          sttEngine: settings.sttEngine,
-          sttApiBaseUrl: settings.sttApiBaseUrl,
-          hasSttApiKey: Boolean(settings.sttApiKey.trim()),
-        });
-        if (activeSttMode !== "browser" && !consumeVoiceProof(tx, data.voiceProof, profile.id, {
-          purpose: "feed",
-          snackId: snack.id,
-        })) {
+    const txRes = db.transaction(
+      (tx) => {
+        const profile = tx
+          .select()
+          .from(childProfiles)
+          .where(eq(childProfiles.id, profileId))
+          .get();
+        if (!profile) return { error: "Profile not found", status: 404 as const };
+        if (profile.totalStars < effectiveCost) {
           return {
-            error: "这次录音没能验证半价，请重新录音，或点「直接投喂」哦！",
+            error: "星星不够啦，再去学一个单元赚星星吧！",
             status: 400 as const,
           };
         }
-      }
 
-      const activity = withDailyActivity(profile, nowDate);
-      const nextStars = profile.totalStars - effectiveCost;
-      const nextHunger = Math.min(100, activity.petHunger + snack.hungerGain);
-      const nextMood = Math.min(
-        100,
-        activity.petMood + snack.moodGain + (data.spokenDiscount ? 5 : 0)
-      );
-      const levelGain = snack.costStars >= 4 && nextHunger >= 95 ? 1 : 0;
+        if (data.spokenDiscount) {
+          const settings = tx.select().from(appSettings).where(eq(appSettings.id, 1)).get()!;
+          const activeSttMode = resolveActiveSttMode({
+            sttEngine: settings.sttEngine,
+            sttApiBaseUrl: settings.sttApiBaseUrl,
+            hasSttApiKey: Boolean(settings.sttApiKey.trim()),
+          });
+          if (
+            activeSttMode !== "browser" &&
+            !consumeVoiceProof(tx, data.voiceProof, profile.id, {
+              purpose: "feed",
+              snackId: snack.id,
+            })
+          ) {
+            return {
+              error: "这次录音没能验证半价，请重新录音，或点「直接投喂」哦！",
+              status: 400 as const,
+            };
+          }
+        }
 
-      tx.update(childProfiles)
-        .set({
-          totalStars: nextStars,
-          petHunger: nextHunger,
-          petMood: nextMood,
-          lastActiveDate: activity.lastActiveDate,
-          streakDays: activity.streakDays,
-          level: profile.level + levelGain,
-          updatedAt: now,
-        })
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-        .run();
+        const activity = withDailyActivity(profile, nowDate);
+        const nextStars = profile.totalStars - effectiveCost;
+        const nextHunger = Math.min(100, activity.petHunger + snack.hungerGain);
+        const nextMood = Math.min(
+          100,
+          activity.petMood + snack.moodGain + (data.spokenDiscount ? 5 : 0)
+        );
+        const levelGain = snack.costStars >= 4 && nextHunger >= 95 ? 1 : 0;
 
-      const fresh = tx
-        .select()
-        .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-        .get()!;
-      return { fresh };
-    }, { behavior: "immediate" });
+        tx.update(childProfiles)
+          .set({
+            totalStars: nextStars,
+            petHunger: nextHunger,
+            petMood: nextMood,
+            lastActiveDate: activity.lastActiveDate,
+            streakDays: activity.streakDays,
+            level: profile.level + levelGain,
+            updatedAt: now,
+          })
+          .where(eq(childProfiles.id, profileId))
+          .run();
+
+        const fresh = tx
+          .select()
+          .from(childProfiles)
+          .where(eq(childProfiles.id, profileId))
+          .get()!;
+        return { fresh };
+      },
+      { behavior: "immediate" }
+    );
 
     if ("error" in txRes) {
       return NextResponse.json({ error: txRes.error }, { status: txRes.status });
@@ -299,7 +360,7 @@ export async function PATCH(request: Request) {
       const profile = tx
         .select()
         .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+        .where(eq(childProfiles.id, profileId))
         .get();
       if (!profile) return { error: "Profile not found", status: 404 as const };
 
@@ -324,13 +385,13 @@ export async function PATCH(request: Request) {
           petMood: Math.min(100, profile.petMood + 10),
           updatedAt: now,
         })
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+        .where(eq(childProfiles.id, profileId))
         .run();
 
       const fresh = tx
         .select()
         .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+        .where(eq(childProfiles.id, profileId))
         .get()!;
       return { fresh };
     });
@@ -348,38 +409,44 @@ export async function PATCH(request: Request) {
     if (!PET_ACCESSORIES.some((item) => item.id === data.accessoryId)) {
       return NextResponse.json({ error: "未找到该装扮" }, { status: 400 });
     }
-    const txRes = db.transaction((tx) => {
-      const profile = tx
-        .select()
-        .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-        .get();
-      if (!profile) return { error: "Profile not found", status: 404 as const };
+    const txRes = db.transaction(
+      (tx) => {
+        const profile = tx
+          .select()
+          .from(childProfiles)
+          .where(eq(childProfiles.id, profileId))
+          .get();
+        if (!profile) return { error: "Profile not found", status: 404 as const };
 
-      const { ownedAccessoriesJson } = withCompletedUnitAccessories(profile, getProfileProgress(tx));
-      const owned = parseJsonStringArray(ownedAccessoriesJson);
-      if (!owned.includes(data.accessoryId)) {
-        return { error: "请先用星星解锁这件装扮哦", status: 400 as const };
-      }
-      const equipped = parseJsonStringArray(profile.equippedAccessoriesJson);
-      const nextEquipped = applyAccessoryEquipWithSlot(equipped, data.accessoryId, "toggle");
+        const { ownedAccessoriesJson } = withCompletedUnitAccessories(
+          profile,
+          getProfileProgress(tx, profileId)
+        );
+        const owned = parseJsonStringArray(ownedAccessoriesJson);
+        if (!owned.includes(data.accessoryId)) {
+          return { error: "请先用星星解锁这件装扮哦", status: 400 as const };
+        }
+        const equipped = parseJsonStringArray(profile.equippedAccessoriesJson);
+        const nextEquipped = applyAccessoryEquipWithSlot(equipped, data.accessoryId, "toggle");
 
-      tx.update(childProfiles)
-        .set({
-          equippedAccessoriesJson: JSON.stringify(nextEquipped),
-          ownedAccessoriesJson,
-          updatedAt: now,
-        })
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-        .run();
+        tx.update(childProfiles)
+          .set({
+            equippedAccessoriesJson: JSON.stringify(nextEquipped),
+            ownedAccessoriesJson,
+            updatedAt: now,
+          })
+          .where(eq(childProfiles.id, profileId))
+          .run();
 
-      const fresh = tx
-        .select()
-        .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
-        .get()!;
-      return { fresh };
-    }, { behavior: "immediate" });
+        const fresh = tx
+          .select()
+          .from(childProfiles)
+          .where(eq(childProfiles.id, profileId))
+          .get()!;
+        return { fresh };
+      },
+      { behavior: "immediate" }
+    );
 
     if ("error" in txRes) {
       return NextResponse.json({ error: txRes.error }, { status: txRes.status });
@@ -397,7 +464,7 @@ export async function PATCH(request: Request) {
       const profile = tx
         .select()
         .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+        .where(eq(childProfiles.id, profileId))
         .get();
       if (!profile) return { error: "Profile not found", status: 404 as const };
 
@@ -426,7 +493,7 @@ export async function PATCH(request: Request) {
             petMood: Math.min(100, profile.petMood + 10),
             updatedAt: now,
           })
-          .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+          .where(eq(childProfiles.id, profileId))
           .run();
       } else {
         tx.update(childProfiles)
@@ -434,14 +501,14 @@ export async function PATCH(request: Request) {
             avatarId: skin.id,
             updatedAt: now,
           })
-          .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+          .where(eq(childProfiles.id, profileId))
           .run();
       }
 
       const fresh = tx
         .select()
         .from(childProfiles)
-        .where(eq(childProfiles.id, DEFAULT_PROFILE_ID))
+        .where(eq(childProfiles.id, profileId))
         .get()!;
       return { fresh, newlyUnlocked: !isUnlocked };
     });
@@ -457,27 +524,32 @@ export async function PATCH(request: Request) {
     });
   }
 
-  db.transaction((tx) => {
-    const profile = tx.select().from(childProfiles).where(eq(childProfiles.id, DEFAULT_PROFILE_ID)).get();
-    if (profile) {
+  db.transaction(
+    (tx) => {
+      const profile = tx.select().from(childProfiles).where(eq(childProfiles.id, profileId)).get();
+      if (!profile) return;
       const active = withDailyActivity(profile, nowDate);
-      const updated = withCompletedUnitAccessories(active, getProfileProgress(tx));
+      const updated = withCompletedUnitAccessories(active, getProfileProgress(tx, profileId));
       if (updated !== profile) {
-        tx.update(childProfiles).set({
-          streakDays: updated.streakDays,
-          petHunger: updated.petHunger,
-          petMood: updated.petMood,
-          lastActiveDate: updated.lastActiveDate,
-          ownedAccessoriesJson: updated.ownedAccessoriesJson,
-          updatedAt: now,
-        }).where(eq(childProfiles.id, profile.id)).run();
+        tx.update(childProfiles)
+          .set({
+            streakDays: updated.streakDays,
+            petHunger: updated.petHunger,
+            petMood: updated.petMood,
+            lastActiveDate: updated.lastActiveDate,
+            ownedAccessoriesJson: updated.ownedAccessoriesJson,
+            updatedAt: now,
+          })
+          .where(eq(childProfiles.id, profileId))
+          .run();
       }
-    }
 
-    if (data.action === "heartbeat_study") {
-      addDailyLogStats(tx, todayDateKey(nowDate), { studySeconds: data.seconds });
-    }
-  }, { behavior: "immediate" });
+      if (data.action === "heartbeat_study") {
+        addDailyLogStats(tx, todayDateKey(nowDate), { studySeconds: data.seconds }, profileId);
+      }
+    },
+    { behavior: "immediate" }
+  );
 
   return NextResponse.json({ ok: true });
 }

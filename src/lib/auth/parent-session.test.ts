@@ -3,15 +3,18 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  createMathChallenge,
   createParentSessionToken,
   hashParentPin,
-  verifyMathChallenge,
+  validateParentPinFormat,
   verifyParentPin,
   verifyParentSessionToken,
 } from "./parent-session";
+import {
+  buildActiveProfileCookie,
+  extractProfileIdFromRequest,
+} from "./profile-session";
 
-describe("parent-session challenge, scrypt PIN, and HMAC cookie tokens", () => {
+describe("parent-session scrypt PIN, format validation, HMAC cookies, and profile-session cookies", () => {
   let tmpDir = "";
   const origDataDir = process.env.DATA_DIR;
 
@@ -28,28 +31,11 @@ describe("parent-session challenge, scrypt PIN, and HMAC cookie tokens", () => {
     }
   });
 
-  it("verifies signed math challenge answers and rejects tampering or expiration", () => {
-    const ch = createMathChallenge(60);
-    expect(verifyMathChallenge(ch.token, ch.a + ch.b)).toBe(true);
-    expect(verifyMathChallenge(ch.token, ch.a + ch.b + 1)).toBe(false);
-    expect(verifyMathChallenge(`${ch.token}tamper`, ch.a + ch.b)).toBe(false);
-
-    const expired = createMathChallenge(-5);
-    expect(verifyMathChallenge(expired.token, expired.a + expired.b)).toBe(false);
-  });
-
-  it("keeps the answer out of the challenge token and rejects replay", () => {
-    const ch = createMathChallenge(60);
-    const payload = JSON.parse(
-      Buffer.from(ch.token.split(".")[0], "base64url").toString("utf8")
-    ) as Record<string, unknown>;
-
-    expect(payload.sum).toBeUndefined();
-    expect(payload.answer).toBeUndefined();
-    expect(typeof payload.nonce).toBe("string");
-
-    expect(verifyMathChallenge(ch.token, ch.a + ch.b)).toBe(true);
-    expect(verifyMathChallenge(ch.token, ch.a + ch.b)).toBe(false);
+  it("validates parent PIN format rules", () => {
+    expect(validateParentPinFormat("")).toMatchObject({ ok: false });
+    expect(validateParentPinFormat("  123 ")).toMatchObject({ ok: false });
+    expect(validateParentPinFormat("a".repeat(33))).toMatchObject({ ok: false });
+    expect(validateParentPinFormat("  2580 ")).toEqual({ ok: true, normalized: "2580" });
   });
 
   it("hashes and verifies parent PINs using scrypt", () => {
@@ -65,5 +51,26 @@ describe("parent-session challenge, scrypt PIN, and HMAC cookie tokens", () => {
     expect(verifyParentSessionToken(token, 4)).toBe(false);
     expect(verifyParentSessionToken(`${token}x`, 3)).toBe(false);
     expect(verifyParentSessionToken(createParentSessionToken(3, -5), 3)).toBe(false);
+  });
+
+  it("extracts and builds active child profile cookies safely", () => {
+    const reqValid = new Request("http://localhost:3000/api/profile", {
+      headers: { Cookie: "foo=bar; dinotalk_profile_id=12; baz=1" },
+    });
+    expect(extractProfileIdFromRequest(reqValid)).toBe(12);
+
+    const reqInvalid = new Request("http://localhost:3000/api/profile", {
+      headers: { Cookie: "dinotalk_profile_id=-3" },
+    });
+    expect(extractProfileIdFromRequest(reqInvalid)).toBeNull();
+
+    const setCookie = buildActiveProfileCookie(7, new Request("https://example.com/"));
+    expect(setCookie).toContain("dinotalk_profile_id=7");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("Secure");
+
+    const clearCookie = buildActiveProfileCookie(null, new Request("http://localhost:3000/"));
+    expect(clearCookie).toContain("dinotalk_profile_id=");
+    expect(clearCookie).toContain("Max-Age=0");
   });
 });

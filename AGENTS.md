@@ -37,7 +37,9 @@ dinotalk/
 │   │   ├── srs.ts                    # 儿童友好间隔重复算法 [0,1,2,4,7,14] 天 + 弱项/待复习判定
 │   │   ├── sound-effects.ts          # Web Audio API 本地合成童趣交互音效（客户端）
 │   │   ├── auth/
-│   │   │   └── parent-session.ts     # 家长 PIN(scrypt)、HMAC 会话 Cookie、算术题与服务端限流
+│   │   │   ├── pin-crypto.ts         # 家长密码格式校验、scrypt 加盐哈希与恒定时间比对
+│   │   │   ├── parent-session.ts     # 家长 HMAC 会话 Cookie、版本吊销与服务端限流
+│   │   │   └── profile-session.ts    # 儿童端活跃档案 Cookie（dinotalk_profile_id）解析与下发
 │   │   ├── security/
 │   │   │   ├── endpoint-guard.ts     # 出站 URL/Host 白名单、同源校验、密钥来源绑定
 │   │   │   ├── provider-fetch.ts     # 带 DNS 校验与禁止重定向的出站 fetch
@@ -52,6 +54,7 @@ dinotalk/
 │   │   └── speech/
 │   │       ├── tts.ts                # Edge-TTS / OpenAI TTS + SHA-256 磁盘缓存 + 浏览器降级
 │   │       ├── stt.ts                # MiniMax (/v1/speech_to_text, asr-1.0) 与 Whisper 转写客户端（中/英语言选择）
+│   │       ├── name-extractor.ts     # 语音建档名字清洗（去除标点与"我叫/我是"等口语前缀）
 │   │       ├── wav-encoder.ts        # 纯 TS 16kHz 单声道 PCM16 WAV 重采样与封装（前后端通用）
 │   │       ├── voice-proof.ts        # 语音凭证签发/消费（防刷星：投喂半价与剧场语音加星）
 │   │       ├── text-sanitizer.ts     # 面向 TTS/对话气泡的 Markdown、音标与标记符号清洗
@@ -60,7 +63,8 @@ dinotalk/
 │   ├── hooks/
 │   │   └── useSpeech.ts              # 前端播放队列 + 双通道录音（含中英识别语言、过期录音丢弃与语音凭证）
 │   ├── components/
-│   │   ├── AppShell.tsx              # 顶栏状态（星星/连胜/静音/护眼提醒/家长入口）与底栏导航
+│   │   ├── AppShell.tsx              # 顶栏状态（星星/连胜/静音/护眼提醒/防误触切换/家长入口）与底栏导航
+│   │   ├── ProfileModal.tsx          # 首次访问语音/文字建档引导与多用户切换弹窗
 │   │   ├── PwaRegister.tsx           # Service Worker 注册组件
 │   │   ├── illustrations/
 │   │   │   ├── DinoCharacter.tsx     # 7 种情绪 + 4 套肤色 + 16 件分槽位配饰的 SVG 动态小恐龙
@@ -68,11 +72,11 @@ dinotalk/
 │   │   │   ├── WordVisual.tsx        # 零外链依赖的单词/颜色/数字视觉卡片
 │   │   │   └── visual-keys.ts        # 视觉键 -> SVG/emoji/配色映射与课程校验用查询函数
 │   │   ├── parent/
-│   │   │   ├── ParentGate.tsx        # 家长锁（算术题 / PIN 解锁）
+│   │   │   ├── ParentGate.tsx        # 家长锁（首次设密 / 纯密码解锁）
 │   │   │   ├── LlmSettingsTab.tsx    # 大模型配置页签
 │   │   │   ├── SpeechSettingsTab.tsx # TTS/STT 配置页签
-│   │   │   ├── ProfileSettingsTab.tsx# 档案、护眼与家长密码页签
-│   │   │   └── LearningReportTab.tsx # 学习成长报告页签
+│   │   │   ├── ProfileSettingsTab.tsx# 多用户档案 CRUD 与家长密码修改页签
+│   │   │   └── LearningReportTab.tsx # 分用户学习成长报告页签
 │   │   └── unit/
 │   │       ├── StoryCardsTab.tsx     # Step 1: 绘本点读屋（慢速点读 + 跟读打分 + 核心句型入库）
 │   │       ├── PhonicsTab.tsx        # Step 2: 自然拼读小站（大小写/易混字母 + CVC 拼读小火车 + 听音辨音）
@@ -86,20 +90,24 @@ dinotalk/
 │       ├── review/page.tsx           # `/review` 每日 3 分钟 SRS 复习宝箱（听音选图/盲听/开口说卡片）
 │       ├── pet/page.tsx              # `/pet` 小恐龙喂养（语音半价）、肤色变身与装扮小屋
 │       ├── chat/page.tsx             # `/chat` 和 Dino 自由聊聊
-│       ├── parent/page.tsx           # `/parent` 家长控制台（数学锁/配置/测试/成长报告）
-│       └── api/                      # 12 个 Node.js Runtime REST 路由
-│           ├── parent/auth/route.ts  # GET/POST 家长验证（算术题 / PIN / 登出 / 设置密码）
-│           ├── profile/route.ts      # GET/PATCH 档案、语音半价喂食、买/戴装扮、肤色选择、学习心跳
-│           ├── progress/route.ts     # GET/POST 单元 4 环节进度结算、SRS 写入与满星装扮解锁
-│           ├── review/route.ts       # GET/POST SRS 到期队列抽取（单词/拼读/句型）与复习结算
-│           ├── agent/chat/route.ts   # POST AI 情景剧场对话 + 任务状态机 + 语音凭证加成 + 对话持久化
-│           ├── agent/freetalk/route.ts # POST 自由英语对话伙伴（支持话题开场白）
+│       ├── parent/page.tsx           # `/parent` 家长控制台（纯密码锁/档案CRUD/配置/测试/成长报告）
+│       └── api/                      # Node.js Runtime REST 路由
+│           ├── profiles/route.ts     # GET/POST 儿童档案列表与自助建档（下发活跃档案 Cookie）
+│           ├── profiles/select/route.ts # POST 切换当前浏览器活跃孩子档案
+│           ├── parent/auth/route.ts  # GET/POST 家长纯密码验证（setup_pin / unlock / set_pin / logout）
+│           ├── parent/profiles/route.ts # GET/POST 家长查看与新建孩子档案（需家长会话）
+│           ├── parent/profiles/[id]/route.ts # PATCH/DELETE 家长修改与级联删除档案（需家长会话）
+│           ├── profile/route.ts      # GET/PATCH 当前活跃档案、语音半价喂食、买/戴装扮、肤色选择、学习心跳
+│           ├── progress/route.ts     # GET/POST 按 profileId 隔离的单元进度结算、SRS 写入与满星解锁
+│           ├── review/route.ts       # GET/POST 按 profileId 隔离的 SRS 到期队列抽取与复习结算
+│           ├── agent/chat/route.ts   # POST 按 profileId 隔离的 AI 情景剧场对话 + 语音凭证加成
+│           ├── agent/freetalk/route.ts # POST 按 profileId 隔离的自由英语对话伙伴
 │           ├── speech/tts/route.ts   # POST 服务端 TTS 音频或浏览器降级指令
-│           ├── speech/stt/route.ts   # POST 云端语音转写代理（MiniMax asr-1.0 / OpenAI Whisper，签发语音凭证）
+│           ├── speech/stt/route.ts   # POST 云端语音转写代理（支持无档案建档转写与绑定档案签发语音凭证）
 │           ├── speech/config/route.ts# GET 公开的 STT 模式与中文提示自动朗读开关（不含任何密钥）
 │           ├── settings/route.ts     # GET(脱敏)/PUT 系统与模型配置（需家长会话）
 │           ├── settings/test/route.ts# POST 一键测试 LLM / TTS / STT 连通性（需家长会话）
-│           └── report/route.ts       # GET 近7天趋势、单元矩阵、掌握墙、亲子陪读卡与对话回顾（需家长会话）
+│           └── report/route.ts       # GET 分用户近7天趋势、单元矩阵、掌握墙、亲子陪读卡与对话回顾（需家长会话）
 ├── Dockerfile                        # Node 24 多阶段 standalone 镜像（设 DOCKER_BUILD=1）
 ├── docker-compose.yml                # 挂载 ./data 持久化数据卷
 ├── next.config.ts                    # serverExternalPackages + node:sqlite external 配置
@@ -130,11 +138,11 @@ dinotalk/
    - `GET /api/settings` 与 `PUT /api/settings` **绝不能**返回明文密钥，只能返回 `maskSecret()` 处理后的掩码及 `has*ApiKey` 布尔值。
    - `PUT /api/settings` 在未传入新密钥或传入空串时必须保留库内已有密钥，仅当显式传入 `clearLlmApiKey: true` 等标志时才清空。
    - 已存密钥只能复用到**同一 origin**（`canReuseStoredSecret()`）；接口地址换域名时必须要求重新输入密钥。目标地址为空时不视为换来源。
-4. **家长鉴权与入站安全**：
-   - `/api/settings`、`/api/settings/test`、`/api/report`、`PATCH /api/profile` 的 `update_profile` 以及 `/api/parent/auth` 的 `set_pin` **必须**先调用 `requireParentAuth()`；儿童端只读接口（`/api/profile` GET、`/api/progress`、`/api/review`、`/api/speech/config`）保持公开。
-   - 所有写操作路由必须调用 `assertJsonSameOrigin()`；`/api/speech/tts` 等需要优雅降级的路由至少调用 `assertSameOrigin()`。
+4. **家长鉴权、多用户隔离与入站安全**：
+   - `/api/settings`、`/api/settings/test`、`/api/report`、`/api/parent/profiles*`、`PATCH /api/profile` 的 `update_profile` 以及 `/api/parent/auth` 的 `set_pin` **必须**先调用 `requireParentAuth()`；家长验证全程使用密码（无算术题），未设置时通过 `setup_pin` 原子初始化或通过 `PARENT_PIN` 环境变量预置，不允许将密码清空。
+   - 儿童端学习与 AI 数据全部通过 `dinotalk_profile_id` Cookie 解析当前活跃 `profileId` 并严格按 `profileId` 隔离（`learning-service.ts` 已移除默认档案 ID）；无活跃档案时仅允许建档、切档、`GET /api/profile` 引导、`/api/speech/config` 与不签发凭证的建档语音转写。
+   - 所有写操作路由必须调用 `assertJsonSameOrigin()`；`DELETE` 或文件上传等无 JSON body 的路由至少调用 `assertSameOrigin()`。
    - 家长会话使用 HMAC 签名 Cookie（`HttpOnly` + `SameSite=Lax`），`parentSessionVersion` 递增即可让旧会话全部失效；修改密码必须同步下发新 Cookie。
-   - 算术题答案只保存在服务端内存（`createMathChallenge`），token 仅携带 nonce 与过期时间，且一次性使用，禁止把答案写回 token。
    - 可选的 `ALLOWED_HOSTS` 用于校验入站 Host（缓解 DNS rebinding）：`src/middleware.ts` 已对全部 `/api/*` 统一拦截，新增需要鉴权的路由时也应走 `requireParentAuth()` 以获得同源校验。
    - 云端 STT 等会消耗额度的公开接口必须经过 `rate-limit.ts` 限流。仅当设置 `TRUST_PROXY_HEADERS=1` 时才信任反向代理写入的 `X-Real-IP` 做按来源限流；默认所有请求共用同一额度，避免伪造请求头绕过限流。
    - 进度 / 复习提交的 `itemKey` 必须属于**当前单元**（`unitHasCurriculumItem()`），同一批 `practicedItems` 不得重复；禁止再使用全局词库校验。

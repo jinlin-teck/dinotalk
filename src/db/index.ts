@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import { hashParentPin, validateParentPinFormat } from "@/lib/auth/pin-crypto";
 import {
   createBetterSqliteCompatClient,
   type BetterSqliteCompatClient,
@@ -122,6 +123,7 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
       expires_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS voice_proofs_expires_at_idx ON voice_proofs (expires_at);
+    CREATE INDEX IF NOT EXISTS voice_proofs_profile_idx ON voice_proofs (profile_id);
 
     CREATE TABLE IF NOT EXISTS chat_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,6 +137,7 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS chat_sessions_profile_idx ON chat_sessions (profile_id);
 
     CREATE TABLE IF NOT EXISTS chat_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,22 +197,17 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
   }).immediate();
 
   const now = new Date().toISOString();
-  const today = todayDateKey();
-
-  sqlite
-    .prepare(
-      `INSERT OR IGNORE INTO child_profiles (
-        id, nickname, avatar_id, companion_name, total_stars, level,
-        pet_hunger, pet_mood, equipped_accessories_json, owned_accessories_json,
-        daily_goal_minutes, eye_care_minutes, streak_days, last_active_date, created_at, updated_at
-      ) VALUES (1, '小探险家', 'dino-green', 'Dino', 10, 1, 80, 90, '[]', '[]', 15, 15, 1, ?, ?, ?)`
-    )
-    .run(today, now, now);
 
   const envProvider = process.env.LLM_PROVIDER?.trim() || "deepseek";
   const envBaseUrl = process.env.LLM_BASE_URL?.trim() || "https://api.deepseek.com/v1";
   const envApiKey = process.env.LLM_API_KEY?.trim() || "";
   const envModel = process.env.LLM_MODEL?.trim() || "deepseek-chat";
+  const envPinRaw = process.env.PARENT_PIN?.trim() || "";
+  const envPinCheck = envPinRaw ? validateParentPinFormat(envPinRaw) : null;
+  if (envPinRaw && envPinCheck && !envPinCheck.ok) {
+    console.warn(`[dinotalk] 环境变量 PARENT_PIN 无效（${envPinCheck.error}），已忽略。`);
+  }
+  const initialParentPin = envPinCheck?.ok ? hashParentPin(envPinCheck.normalized) : "";
 
   sqlite
     .prepare(
@@ -219,9 +217,19 @@ function bootstrapDatabase(sqlite: BetterSqliteCompatClient) {
         tts_api_base_url, tts_api_key, tts_api_model,
         stt_engine, stt_api_base_url, stt_api_key, stt_api_model,
         parent_pin, updated_at
-      ) VALUES (1, ?, ?, ?, ?, 0.6, 'edge', 'en-US-AnaNeural', 'zh-CN-XiaoxiaoNeural', 0.85, 1, '', '', 'tts-1', 'browser', '', '', 'whisper-1', '', ?)`
+      ) VALUES (1, ?, ?, ?, ?, 0.6, 'edge', 'en-US-AnaNeural', 'zh-CN-XiaoxiaoNeural', 0.85, 1, '', '', 'tts-1', 'browser', '', '', 'whisper-1', ?, ?)`
     )
-    .run(envProvider, envBaseUrl, envApiKey, envModel, now);
+    .run(envProvider, envBaseUrl, envApiKey, envModel, initialParentPin, now);
+
+  if (initialParentPin) {
+    sqlite
+      .prepare(
+        `UPDATE app_settings
+         SET parent_pin = ?, updated_at = ?
+         WHERE id = 1 AND trim(parent_pin) = ''`
+      )
+      .run(initialParentPin, now);
+  }
 }
 
 export function getDb(): BetterSQLite3Database<typeof schema> {

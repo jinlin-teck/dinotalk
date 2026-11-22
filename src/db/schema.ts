@@ -84,18 +84,22 @@ export const wordMastery = sqliteTable(
   ]
 );
 
-export const chatSessions = sqliteTable("chat_sessions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  profileId: integer("profile_id").notNull().default(1),
-  unitId: text("unit_id").notNull(),
-  mode: text("mode").notNull().default("roleplay"), // 'roleplay' | 'freetalk'
-  completedGoalsJson: text("completed_goals_json").notNull().default("[]"),
-  summaryZh: text("summary_zh").notNull().default(""),
-  starsEarned: integer("stars_earned").notNull().default(0),
-  hasVoiceTurn: integer("has_voice_turn", { mode: "boolean" }).notNull().default(false),
-  createdAt: text("created_at").notNull(),
-  updatedAt: text("updated_at").notNull(),
-});
+export const chatSessions = sqliteTable(
+  "chat_sessions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    profileId: integer("profile_id").notNull().default(1),
+    unitId: text("unit_id").notNull(),
+    mode: text("mode").notNull().default("roleplay"), // 'roleplay' | 'freetalk'
+    completedGoalsJson: text("completed_goals_json").notNull().default("[]"),
+    summaryZh: text("summary_zh").notNull().default(""),
+    starsEarned: integer("stars_earned").notNull().default(0),
+    hasVoiceTurn: integer("has_voice_turn", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [index("chat_sessions_profile_idx").on(table.profileId)]
+);
 
 export const voiceProofs = sqliteTable(
   "voice_proofs",
@@ -106,7 +110,10 @@ export const voiceProofs = sqliteTable(
     evidence: text("evidence").notNull(),
     expiresAt: integer("expires_at").notNull(),
   },
-  (table) => [index("voice_proofs_expires_at_idx").on(table.expiresAt)]
+  (table) => [
+    index("voice_proofs_expires_at_idx").on(table.expiresAt),
+    index("voice_proofs_profile_idx").on(table.profileId),
+  ]
 );
 
 export const chatMessages = sqliteTable(
